@@ -1,0 +1,68 @@
+name: business_pro
+description: "BusinessPro — Offline-first accounting & invoicing app"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.12.1
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+
+  # Database
+  sqflite: ^2.4.2
+  sqflite_common_ffi: ^2.4.1
+  path: ^1.9.1
+  path_provider: ^2.1.5
+
+  # State management
+  flutter_riverpod: ^2.6.1
+  riverpod_annotation: ^2.6.1
+
+  # Navigation
+  go_router: ^15.1.2
+
+  # PDF & Printing
+  pdf: ^3.11.3
+  printing: ^5.14.2
+
+  # Sharing
+  share_plus: ^13.1.0
+
+  # Launching SMS / dialler / external apps
+  url_launcher: ^6.3.1
+
+  # Image picking (logo/signature)
+  image_picker: ^1.1.2
+
+  # On-screen signature drawing pad
+  signature: ^6.3.0
+
+  # Charts (reports)
+  fl_chart: ^0.70.2
+
+  # Formatting
+  intl: ^0.20.2
+
+  # Unique IDs
+  uuid: ^4.5.1
+
+  # Light key-value settings
+  shared_preferences: ^2.3.5
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  riverpod_generator: ^2.6.1
+  build_runner: ^2.4.14
+  custom_lint: ^0.7.5
+  riverpod_lint: ^2.6.1
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/images/
+    - assets/fonts/

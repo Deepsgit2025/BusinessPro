@@ -1,0 +1,60 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'core/constants/app_strings.dart';
+import 'core/constants/app_theme.dart';
+import 'core/database/database_helper.dart';
+import 'core/providers/theme_provider.dart';
+import 'features/cash_bank/screens/accounts_list_screen.dart';
+import 'features/company/screens/company_setup_screen.dart';
+import 'features/expense/screens/expense_list_screen.dart';
+import 'features/income/screens/income_list_screen.dart';
+import 'features/items/screens/items_list_screen.dart';
+import 'features/settings/screens/settings_screen.dart';
+import 'shared/widgets/main_shell.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+
+  if (Platform.isWindows || Platform.isLinux) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
+
+  // Initialize DB — creates all 15 tables + seeds data on first run
+  await DatabaseHelper.database;
+
+  runApp(const ProviderScope(child: BusinessProApp()));
+}
+
+class BusinessProApp extends ConsumerWidget {
+  const BusinessProApp({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeMode = ref.watch(themeProvider);
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      ref.read(themeProvider.notifier).loadFromDb();
+    });
+
+    return MaterialApp(
+      title: AppStrings.appName,
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light,
+      darkTheme: AppTheme.dark,
+      themeMode: themeMode,
+      initialRoute: '/',
+      routes: {
+        '/': (_) => const MainShell(),
+        '/company-setup': (_) => const CompanySetupScreen(),
+        '/items': (_) => const ItemsListScreen(),
+        '/expense': (_) => const ExpenseListScreen(),
+        '/income': (_) => const IncomeListScreen(),
+        '/cash-bank': (_) => const AccountsListScreen(),
+        '/settings': (_) => const SettingsScreen(),
+      },
+    );
+  }
+}
