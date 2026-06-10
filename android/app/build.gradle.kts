@@ -40,8 +40,25 @@ android {
             // TODO: Add your own signing config for the release build.
             // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.getByName("debug")
+            // R8 trips on ML Kit's optional per-script recognizer modules
+            // (Chinese/Devanagari/…) which we don't bundle. The keep rules below
+            // suppress those missing-class warnings so minification completes.
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
+}
+
+dependencies {
+    // The google_mlkit_text_recognition plugin bundles only the Latin recognizer
+    // (it declares the other scripts compileOnly, so apps opt in to just what
+    // they need). Scan Bill also reads Hindi bills, so we add the Devanagari
+    // recognizer as a real dependency here — otherwise its classes are absent
+    // from the release APK and constructing the Devanagari TextRecognizer
+    // crashes at runtime (NoClassDefFoundError).
+    implementation("com.google.mlkit:text-recognition-devanagari:16.0.1")
 }
 
 kotlin {

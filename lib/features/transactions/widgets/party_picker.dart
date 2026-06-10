@@ -59,7 +59,7 @@ class _PartyPickerSheetState extends ConsumerState<_PartyPickerSheet> {
                 width: 40,
                 height: 4,
                 decoration: BoxDecoration(
-                    color: AppColors.border,
+                    color: AppColors.dividerOf(context),
                     borderRadius: BorderRadius.circular(2)),
               ),
               Padding(

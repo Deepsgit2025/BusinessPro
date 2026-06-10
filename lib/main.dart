@@ -10,7 +10,10 @@ import 'features/cash_bank/screens/accounts_list_screen.dart';
 import 'features/company/screens/company_setup_screen.dart';
 import 'features/expense/screens/expense_list_screen.dart';
 import 'features/income/screens/income_list_screen.dart';
+import 'features/employees/screens/employees_list_screen.dart';
+import 'features/backup/screens/backup_screen.dart';
 import 'features/items/screens/items_list_screen.dart';
+import 'features/reports/screens/reports_home_screen.dart';
 import 'features/settings/screens/settings_screen.dart';
 import 'shared/widgets/main_shell.dart';
 
@@ -22,7 +25,7 @@ Future<void> main() async {
     databaseFactory = databaseFactoryFfi;
   }
 
-  // Initialize DB — creates all 15 tables + seeds data on first run
+  // Initialize DB — creates all tables + seeds data on first run
   await DatabaseHelper.database;
 
   runApp(const ProviderScope(child: BusinessProApp()));
@@ -53,6 +56,9 @@ class BusinessProApp extends ConsumerWidget {
         '/expense': (_) => const ExpenseListScreen(),
         '/income': (_) => const IncomeListScreen(),
         '/cash-bank': (_) => const AccountsListScreen(),
+        '/employees': (_) => const EmployeesListScreen(),
+        '/reports': (_) => const ReportsHomeScreen(),
+        '/backup': (_) => const BackupScreen(),
         '/settings': (_) => const SettingsScreen(),
       },
     );

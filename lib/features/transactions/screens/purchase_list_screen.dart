@@ -78,6 +78,7 @@ class PurchaseListScreen extends ConsumerWidget {
                   itemBuilder: (context, i) {
                     final txn = txns[i];
                     return TransactionCard(
+                      key: ValueKey(txn.id),
                       txn: txn,
                       onTap: () => _open(context, ref, txn),
                       onLongPress: () => _longPressMenu(context, ref, txn),
@@ -208,7 +209,7 @@ class _ActionGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.white,
+      color: AppColors.surface(context),
       padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -263,10 +264,10 @@ class _ActionButton extends StatelessWidget {
             Text(
               item.label,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
-                color: AppColors.textPrimary,
+                color: AppColors.textPrimaryOf(context),
                 height: 1.3,
               ),
             ),

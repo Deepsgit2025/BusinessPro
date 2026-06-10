@@ -78,9 +78,9 @@ class _ItemLineWidgetState extends State<ItemLineWidget> {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       decoration: BoxDecoration(
-        color: AppColors.backgroundLight,
+        color: AppColors.background(context),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(color: AppColors.dividerOf(context)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -167,9 +167,9 @@ class _ItemLineWidgetState extends State<ItemLineWidget> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.surface(context),
         borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(color: AppColors.dividerOf(context)),
       ),
       child: Text('#$index',
           style: const TextStyle(
@@ -202,9 +202,9 @@ class _ItemLineWidgetState extends State<ItemLineWidget> {
 
   Widget _editors(LineDraft d) {
     return Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.vertical(bottom: Radius.circular(8)),
+      decoration: BoxDecoration(
+        color: AppColors.surface(context),
+        borderRadius: const BorderRadius.vertical(bottom: Radius.circular(8)),
       ),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
       child: Column(

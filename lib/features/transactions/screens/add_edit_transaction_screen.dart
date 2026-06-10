@@ -1,15 +1,24 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:printing/printing.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_lists.dart';
 import '../../../core/database/database_helper.dart';
 import '../../../core/utils/formatters.dart';
+import '../../../services/ocr/bill_parser.dart';
+import '../../../services/ocr/bill_scanner_service.dart';
+import '../../items/models/item.dart';
 import '../../items/models/item_unit.dart';
 import '../../items/models/tax_rate.dart';
+import '../../items/repositories/item_repository.dart';
 import '../../items/repositories/item_unit_repository.dart';
 import '../../items/repositories/tax_rate_repository.dart';
 import '../../parties/models/party.dart';
@@ -26,6 +35,12 @@ import '../widgets/item_picker.dart';
 import '../widgets/line_draft.dart';
 import '../widgets/party_picker.dart';
 import '../widgets/totals_section.dart';
+import 'scan_result_screen.dart';
+
+/// True on platforms where Scan Bill (camera + ML Kit OCR) is unavailable.
+/// ML Kit ships only Android/iOS implementations; this app targets Android +
+/// Windows desktop, so the feature is hidden everywhere except Android.
+final bool kIsScanUnsupported = !Platform.isAndroid;
 
 /// Shared entry screen for sale / purchase / estimate. Configured by [mode].
 ///
@@ -76,6 +91,13 @@ class _AddEditTransactionScreenState
   String? _businessState;
   bool _loading = true;
   bool _saving = false;
+
+  /// True while a scanned bill is being OCR'd / parsed, to gate the overlay.
+  bool _scanning = false;
+
+  /// Set just before a successful-save pop so the [PopScope] guard lets that
+  /// programmatic pop through without prompting to discard.
+  bool _saved = false;
 
   // Form state.
   Party? _party;
@@ -325,6 +347,232 @@ class _AddEditTransactionScreenState
     setState(() => _lines.add(draft));
   }
 
+  // ── Scan Bill (OCR purchase entry) ──────────────────────────────────────────
+
+  /// Whether the Scan Bill entry point should be shown: only for purchase bills,
+  /// and only on Android (ML Kit / camera are unavailable on desktop).
+  bool get _canScanBill =>
+      widget.mode == TxnFormMode.purchase && !kIsScanUnsupported;
+
+  /// Opens the source chooser, runs OCR + parsing on the picked image, shows the
+  /// review screen, and applies the confirmed data to the form. The photo is
+  /// never persisted — it lives only in memory for the OCR pass.
+  Future<void> _scanBill() async {
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (_) => _scanSourceSheet(),
+    );
+    if (source == null || !mounted) return;
+
+    final picker = ImagePicker();
+    final XFile? image;
+    try {
+      image = await picker.pickImage(source: source, maxWidth: 2000);
+    } catch (e) {
+      if (mounted) _snack('Could not open ${source == ImageSource.camera ? 'camera' : 'gallery'}');
+      return;
+    }
+    if (image == null || !mounted) return;
+
+    setState(() => _scanning = true);
+    final scanner = BillScannerService();
+    BillParseResult? parsed;
+    try {
+      final text = await scanner.extractText(image);
+      if (text.trim().isEmpty) {
+        if (mounted) {
+          setState(() => _scanning = false);
+          _snack('Could not read bill clearly, please try again');
+        }
+        return;
+      }
+      parsed = const BillParser().parse(text);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _scanning = false);
+        _snack('Could not read bill clearly, please try again');
+      }
+      return;
+    } finally {
+      scanner.dispose();
+    }
+
+    if (!mounted) return;
+    setState(() => _scanning = false);
+
+    final confirmed = await Navigator.push<BillParseResult>(
+      context,
+      MaterialPageRoute(builder: (_) => ScanResultScreen(result: parsed!)),
+    );
+    if (confirmed != null && mounted) {
+      await _applyScannedData(confirmed);
+    }
+  }
+
+  Widget _scanSourceSheet() {
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text('Scan Purchase Bill',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: _scanSourceButton(
+                    icon: Icons.photo_camera_outlined,
+                    label: 'Take Photo',
+                    source: ImageSource.camera,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _scanSourceButton(
+                    icon: Icons.photo_library_outlined,
+                    label: 'Choose from Gallery',
+                    source: ImageSource.gallery,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Works best with clear, printed bills. Hindi and English supported.\n'
+              'Tip: good lighting and a flat surface give the best results.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _scanSourceButton({
+    required IconData icon,
+    required String label,
+    required ImageSource source,
+  }) {
+    return OutlinedButton(
+      style: OutlinedButton.styleFrom(
+        padding: const EdgeInsets.symmetric(vertical: 18),
+        side: const BorderSide(color: AppColors.border),
+        shape:
+            RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      ),
+      onPressed: () => Navigator.pop(context, source),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 28, color: AppColors.partial),
+          const SizedBox(height: 8),
+          Text(label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+
+  /// Applies a confirmed scan to the form: matches/pre-fills the supplier,
+  /// reference number and date, then matches each line item to the items master
+  /// (falling back to a free-text line). Amounts are informational only — the
+  /// form recomputes totals from the line items.
+  Future<void> _applyScannedData(BillParseResult r) async {
+    final partyRepo = PartyRepository();
+    final itemRepo = ItemRepository();
+
+    // 1. Supplier — match by GSTIN first (exact), then by name, else pre-fill.
+    Party? matched;
+    if (r.supplierGstin != null) {
+      final suppliers = await partyRepo.getParties(type: 'supplier');
+      final g = r.supplierGstin!.toUpperCase();
+      matched = suppliers
+          .where((s) => (s.gstin ?? '').toUpperCase() == g)
+          .firstOrNull;
+    }
+    if (matched == null && r.supplierName != null) {
+      final byName = await partyRepo.getParties(
+          type: 'supplier', search: r.supplierName);
+      final lower = r.supplierName!.toLowerCase();
+      matched = byName.where((s) => s.name.toLowerCase() == lower).firstOrNull ??
+          byName.firstOrNull;
+    }
+
+    // 2. Resolve line items against the items master.
+    final drafts = <LineDraft>[];
+    for (final parsed in r.lineItems) {
+      final candidates = await itemRepo.getItems(search: parsed.itemName);
+      final lower = parsed.itemName.toLowerCase();
+      final Item? item = candidates
+              .where((c) => c.name.toLowerCase() == lower)
+              .firstOrNull ??
+          candidates.firstOrNull;
+
+      if (item != null) {
+        final draft = LineDraft(
+          itemId: item.id,
+          itemName: item.name,
+          itemHsn: item.hsnCode,
+          taxRateId: item.taxRateId,
+          taxRate: item.taxRateValue ?? 0,
+          taxInclusive: item.taxInclusive,
+          quantity: parsed.quantity ?? 1,
+          unitPrice: parsed.unitPrice ?? item.purchasePrice,
+        );
+        if (item.id != null) {
+          final tiers = await _itemUnitRepo.getItemUnits(item.id!);
+          draft.tiers = tiers;
+          final preferred = tiers
+              .where((t) => t.isDefaultPurchase)
+              .firstOrNull ??
+              tiers.firstOrNull;
+          if (preferred != null) {
+            draft.applyTier(preferred, isPurchase: true);
+            // Keep the scanned price/qty over the tier defaults.
+            draft.quantity = parsed.quantity ?? draft.quantity;
+            if (parsed.unitPrice != null) draft.unitPrice = parsed.unitPrice!;
+          }
+        }
+        drafts.add(draft);
+      } else {
+        // Free-text line: no master item, just the scanned name / qty / price.
+        drafts.add(LineDraft(
+          itemName: parsed.itemName,
+          quantity: parsed.quantity ?? 1,
+          unitPrice: parsed.unitPrice ?? 0,
+        ));
+      }
+    }
+
+    if (!mounted) return;
+    setState(() {
+      if (matched != null) {
+        _party = matched;
+        _billingName.text = matched.name;
+        if ((matched.phone ?? '').isNotEmpty) _phone.text = matched.phone!;
+        if ((matched.billingState ?? '').isNotEmpty) {
+          _supplyState = matched.billingState;
+        }
+      } else if (r.supplierName != null) {
+        _billingName.text = r.supplierName!;
+      }
+      if (r.billNumber != null) _reference.text = r.billNumber!;
+      if (r.billDate != null) _date = r.billDate!;
+      _lines.addAll(drafts);
+    });
+
+    final foundItems = drafts.length;
+    _snack(foundItems > 0
+        ? 'Applied scanned bill — $foundItems item(s) added, please review'
+        : 'Applied scanned bill — please add items and review');
+  }
+
   // ── Save ─────────────────────────────────────────────────────────────────
 
   /// Persists the transaction and returns the saved row id, or `null` if
@@ -433,6 +681,7 @@ class _AddEditTransactionScreenState
       if (andNew && !_isEdit) {
         await _resetForNew();
       } else if (pop) {
+        setState(() => _saved = true);
         Navigator.pop(context, true);
       } else {
         setState(() => _saving = false);
@@ -546,6 +795,7 @@ class _AddEditTransactionScreenState
       if (andNew && !_isEdit) {
         await _resetForNew();
       } else if (pop) {
+        setState(() => _saved = true);
         Navigator.pop(context, true);
       } else {
         setState(() => _saving = false);
@@ -609,6 +859,66 @@ class _AddEditTransactionScreenState
     }
   }
 
+  /// Saves the document (without leaving the screen) and then opens a
+  /// full-screen preview of its PDF.
+  Future<void> _saveAndOpenPdf() async {
+    if (_saving) return;
+    final id = await _save(pop: false);
+    if (id == null || !mounted) return;
+    final fileName =
+        '${_txnNumber.replaceAll(RegExp(r'[^\w\-]'), '_')}.pdf';
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => Scaffold(
+          appBar: AppBar(title: Text(_txnNumber)),
+          body: PdfPreview(
+            build: (_) => _buildPdf(id),
+            canChangePageFormat: false,
+            canChangeOrientation: false,
+            pdfFileName: fileName,
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Saves the document (without leaving the screen), writes its PDF to a temp
+  /// file, and opens the system share/save sheet so the user can store it.
+  Future<void> _saveAndSavePdf() async {
+    if (_saving) return;
+    final id = await _save(pop: false);
+    if (id == null || !mounted) return;
+    try {
+      final bytes = await _buildPdf(id);
+      final name = '${_txnNumber.replaceAll(RegExp(r'[^\w\-]'), '_')}.pdf';
+      final dir = await getTemporaryDirectory();
+      final file = File(p.join(dir.path, name));
+      await file.writeAsBytes(bytes);
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(file.path)], text: 'Save $_txnNumber'),
+      );
+    } catch (e) {
+      if (mounted) _snack('Could not save PDF: $e');
+    }
+  }
+
+  /// Saves the current document, then opens a fresh form pre-filled from it so
+  /// the user can record a near-identical document. Mirrors the saved-bill
+  /// "Duplicate" action.
+  Future<void> _saveAndDuplicate() async {
+    if (_saving) return;
+    final id = await _save(pop: false);
+    if (id == null || !mounted) return;
+    final r = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AddEditTransactionScreen(
+            mode: widget.mode, duplicateFromId: id),
+      ),
+    );
+    if (r == true) ref.refreshTransactions();
+  }
+
   /// Clears the form after a "Save & New" so the next entry starts blank, and
   /// fetches the freshly-incremented next number.
   Future<void> _resetForNew() async {
@@ -640,6 +950,51 @@ class _AddEditTransactionScreenState
   void _snack(String msg) => ScaffoldMessenger.of(context)
       .showSnackBar(SnackBar(content: Text(msg)));
 
+  // ── Discard-on-back guard ───────────────────────────────────────────────────
+
+  /// Whether the user has entered anything worth confirming before leaving.
+  /// While editing an existing document we always guard, since any change there
+  /// is an edit to real data.
+  bool get _isDirty {
+    if (_isEdit) return true;
+    if (_lines.isNotEmpty) return true;
+    if (_party != null) return true;
+    if (_billingName.text.trim().isNotEmpty) return true;
+    if (_phone.text.trim().isNotEmpty) return true;
+    if (_notes.text.trim().isNotEmpty) return true;
+    if (_reference.text.trim().isNotEmpty) return true;
+    if (_manualTotal.text.trim().isNotEmpty) return true;
+    if (_manualPaid.text.trim().isNotEmpty) return true;
+    return false;
+  }
+
+  /// Asks the user to confirm leaving with unsaved changes. Returns true if it
+  /// is OK to pop (nothing entered, or the user chose to discard).
+  Future<bool> _confirmDiscard() async {
+    if (_saving) return false;
+    if (!_isDirty) return true;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Discard $_typeLabel?'),
+        content: Text(
+            'You have unsaved changes. Are you sure you want to discard this $_typeLabel?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Keep Editing'),
+          ),
+          TextButton(
+            style: TextButton.styleFrom(foregroundColor: AppColors.primary),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Discard'),
+          ),
+        ],
+      ),
+    );
+    return discard ?? false;
+  }
+
   // ── UI ─────────────────────────────────────────────────────────────────────
 
   @override
@@ -654,14 +1009,23 @@ class _AddEditTransactionScreenState
     final totals = _totals;
     final totalQty = _lines.fold<double>(0, (s, l) => s + l.quantity);
 
-    return Scaffold(
-      backgroundColor: Colors.white,
+    return PopScope(
+      canPop: _saved,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final navigator = Navigator.of(context);
+        if (await _confirmDiscard()) {
+          navigator.pop();
+        }
+      },
+      child: Scaffold(
+      backgroundColor: AppColors.surface(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: AppColors.textPrimary,
+        backgroundColor: AppColors.surface(context),
+        foregroundColor: AppColors.textPrimaryOf(context),
         elevation: 0,
         scrolledUnderElevation: 0,
-        shape: const Border(bottom: BorderSide(color: AppColors.divider)),
+        shape: Border(bottom: BorderSide(color: AppColors.dividerOf(context))),
         title: Text(_headerTitle,
             style: const TextStyle(
                 fontSize: 20, fontWeight: FontWeight.w700)),
@@ -677,13 +1041,16 @@ class _AddEditTransactionScreenState
           const SizedBox(width: 4),
         ],
       ),
-      body: _isCreditNote
+      body: Stack(
+        children: [
+          _isCreditNote
           ? _creditNoteBody()
           : ListView(
         padding: EdgeInsets.zero,
         children: [
+          if (_canScanBill) _scanBillBanner(),
           _invoiceHeaderRow(),
-          const Divider(height: 1, thickness: 6, color: AppColors.backgroundLight),
+          Divider(height: 1, thickness: 6, color: AppColors.background(context)),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
             child: _billingFields(),
@@ -697,7 +1064,77 @@ class _AddEditTransactionScreenState
           const SizedBox(height: 24),
         ],
       ),
+          if (_scanning) _scanningOverlay(),
+        ],
+      ),
       bottomNavigationBar: _bottomBar(),
+      ),
+    );
+  }
+
+  /// Tappable banner at the top of the Purchase form that launches the scan.
+  Widget _scanBillBanner() {
+    return InkWell(
+      onTap: _scanning ? null : _scanBill,
+      child: Container(
+        margin: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        decoration: BoxDecoration(
+          color: AppColors.partial.withValues(alpha: 0.10),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppColors.partial.withValues(alpha: 0.3)),
+        ),
+        child: Row(
+          children: [
+            const Icon(Icons.document_scanner_outlined,
+                color: AppColors.partial),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Scan Bill',
+                      style: TextStyle(
+                          fontWeight: FontWeight.w700,
+                          fontSize: 15,
+                          color: AppColors.partial)),
+                  Text('or fill manually below',
+                      style: TextStyle(
+                          fontSize: 12, color: AppColors.textSecondary)),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: AppColors.partial),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Full-screen dim + spinner shown while ML Kit reads the bill.
+  Widget _scanningOverlay() {
+    return Positioned.fill(
+      child: ColoredBox(
+        color: Colors.black54,
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+            decoration: BoxDecoration(
+              color: AppColors.surface(context),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                CircularProgressIndicator(color: AppColors.partial),
+                SizedBox(height: 16),
+                Text('Reading bill…',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 
@@ -732,7 +1169,7 @@ class _AddEditTransactionScreenState
       padding: EdgeInsets.zero,
       children: [
         _returnHeaderRow(),
-        const Divider(height: 1, thickness: 6, color: AppColors.backgroundLight),
+        Divider(height: 1, thickness: 6, color: AppColors.background(context)),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
           child: Column(
@@ -838,7 +1275,7 @@ class _AddEditTransactionScreenState
           Container(
             width: 1,
             height: 36,
-            color: AppColors.divider,
+            color: AppColors.dividerOf(context),
             margin: const EdgeInsets.symmetric(horizontal: 12),
           ),
           Expanded(
@@ -889,7 +1326,7 @@ class _AddEditTransactionScreenState
               style: TextStyle(
                 color: _invoiceDate == null
                     ? AppColors.textHint
-                    : AppColors.textPrimary,
+                    : AppColors.textPrimaryOf(context),
               ),
             ),
             const Icon(Icons.calendar_today,
@@ -903,7 +1340,7 @@ class _AddEditTransactionScreenState
   /// Total Amount (editable when no line items) / Paid (editable) / Balance Due.
   Widget _creditNoteSummary(double total, double paid, double balance) {
     return Container(
-      color: AppColors.backgroundLight,
+      color: AppColors.background(context),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       child: Column(
         children: [
@@ -940,7 +1377,7 @@ class _AddEditTransactionScreenState
             style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.w600,
-                color: labelColor ?? AppColors.textPrimary)),
+                color: labelColor ?? AppColors.textPrimaryOf(context))),
         Flexible(child: Align(alignment: Alignment.centerRight, child: trailing)),
       ],
     );
@@ -984,54 +1421,47 @@ class _AddEditTransactionScreenState
 
   // ── Header: overflow (three-dots) menu ──────────────────────────────────────
 
-  /// Three-dots menu shown on every sale-document creation screen. Items save
-  /// the document first (staying on-screen), then act on its PDF. The set is
-  /// intentionally small for now and easy to extend later.
+  /// Three-dots menu shown on every sale-document creation screen. It mirrors
+  /// the action set offered on a saved bill (Duplicate + the PDF actions), but
+  /// because the document isn't persisted yet each item saves it first (staying
+  /// on-screen via `_save(pop: false)`) and then acts on the saved PDF.
   Widget _overflowMenu() {
     return PopupMenuButton<String>(
       icon: const Icon(Icons.more_vert),
       tooltip: 'More',
       onSelected: (v) async {
         switch (v) {
-          case 'share':
-            await _saveAndShare();
-          case 'print':
+          case 'duplicate':
+            await _saveAndDuplicate();
+          case 'open_pdf':
+            await _saveAndOpenPdf();
+          case 'print_pdf':
             await _saveAndPrint();
-          case 'settings':
-            // Settings screen wiring to come.
-            break;
+          case 'share_pdf':
+            await _saveAndShare();
+          case 'save_pdf':
+            await _saveAndSavePdf();
         }
       },
-      itemBuilder: (_) => const [
-        PopupMenuItem(
-          value: 'share',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.share_outlined),
-            title: Text('Share'),
-          ),
-        ),
-        PopupMenuItem(
-          value: 'print',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.print_outlined),
-            title: Text('Print'),
-          ),
-        ),
-        PopupMenuDivider(),
-        PopupMenuItem(
-          value: 'settings',
-          child: ListTile(
-            dense: true,
-            contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.settings_outlined),
-            title: Text('Settings'),
-          ),
-        ),
+      itemBuilder: (_) => [
+        _menuItem('duplicate', Icons.copy_outlined, 'Duplicate'),
+        _menuItem('open_pdf', Icons.picture_as_pdf_outlined, 'Open PDF'),
+        _menuItem('print_pdf', Icons.print_outlined, 'Print PDF'),
+        _menuItem('share_pdf', Icons.share_outlined, 'Share PDF'),
+        _menuItem('save_pdf', Icons.download_outlined, 'Save PDF to Phone'),
       ],
+    );
+  }
+
+  PopupMenuItem<String> _menuItem(String value, IconData icon, String label) {
+    return PopupMenuItem<String>(
+      value: value,
+      child: ListTile(
+        dense: true,
+        contentPadding: EdgeInsets.zero,
+        leading: Icon(icon),
+        title: Text(label),
+      ),
     );
   }
 
@@ -1042,9 +1472,9 @@ class _AddEditTransactionScreenState
       margin: const EdgeInsets.symmetric(vertical: 10),
       padding: const EdgeInsets.all(2),
       decoration: BoxDecoration(
-        color: AppColors.backgroundLight,
+        color: AppColors.background(context),
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(color: AppColors.dividerOf(context)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1095,7 +1525,7 @@ class _AddEditTransactionScreenState
           Container(
             width: 1,
             height: 36,
-            color: AppColors.divider,
+            color: AppColors.dividerOf(context),
             margin: const EdgeInsets.symmetric(horizontal: 12),
           ),
           Expanded(
@@ -1255,7 +1685,7 @@ class _AddEditTransactionScreenState
 
   Widget _totalAmountBar(double total) {
     return Container(
-      color: AppColors.backgroundLight,
+      color: AppColors.background(context),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 18),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1416,7 +1846,7 @@ class _AddEditTransactionScreenState
               ),
             ),
           const SizedBox(height: 12),
-          const Divider(height: 1, thickness: 6, color: AppColors.backgroundLight),
+          Divider(height: 1, thickness: 6, color: AppColors.background(context)),
         ],
       ),
     );
@@ -1427,8 +1857,9 @@ class _AddEditTransactionScreenState
   Widget _bottomBar() {
     return SafeArea(
       child: Container(
-        decoration: const BoxDecoration(
-          border: Border(top: BorderSide(color: AppColors.divider)),
+        decoration: BoxDecoration(
+          color: AppColors.surface(context),
+          border: Border(top: BorderSide(color: AppColors.dividerOf(context))),
         ),
         child: Row(
           children: [
@@ -1436,7 +1867,7 @@ class _AddEditTransactionScreenState
               child: TextButton(
                 style: TextButton.styleFrom(
                   padding: const EdgeInsets.symmetric(vertical: 18),
-                  foregroundColor: AppColors.textPrimary,
+                  foregroundColor: AppColors.textPrimaryOf(context),
                 ),
                 onPressed: _saving ? null : () => _save(andNew: true),
                 child: const Text('Save & New',

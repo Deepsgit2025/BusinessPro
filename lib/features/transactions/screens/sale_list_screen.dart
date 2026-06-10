@@ -77,6 +77,12 @@ class SaleListScreen extends ConsumerWidget {
                   itemBuilder: (context, i) {
                     final txn = txns[i];
                     return TransactionCard(
+                      // Stable identity per transaction so Flutter matches each
+                      // card Element to its data after the list refreshes (e.g.
+                      // right after a save). Without it, keyless cards are reused
+                      // by index and a tap can route to the previously-shown
+                      // transaction's id.
+                      key: ValueKey(txn.id),
                       txn: txn,
                       onTap: () => _open(context, ref, txn),
                       onLongPress: () => _longPressMenu(context, ref, txn),
@@ -231,19 +237,22 @@ class _ActionGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      color: Colors.white,
+      color: AppColors.surface(context),
       padding: const EdgeInsets.fromLTRB(12, 14, 12, 10),
-      // 3 buttons per row, evenly spaced with equal left/right margins.
-      child: GridView.count(
-        crossAxisCount: 3,
+      // 3 buttons per row. A fixed row height (mainAxisExtent) keeps the two
+      // rows tight together — using childAspectRatio instead would stretch the
+      // cells tall on wide (desktop) windows and leave an ugly gap between rows.
+      child: GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        mainAxisSpacing: 4,
-        childAspectRatio: 0.95,
-        children: _items
-            .map((item) =>
-                _ActionButton(item: item, onTap: () => onTap(item.mode)))
-            .toList(),
+        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: 3,
+          mainAxisExtent: 96,
+          mainAxisSpacing: 4,
+        ),
+        itemCount: _items.length,
+        itemBuilder: (context, i) =>
+            _ActionButton(item: _items[i], onTap: () => onTap(_items[i].mode)),
       ),
     );
   }
@@ -290,10 +299,10 @@ class _ActionButton extends StatelessWidget {
             Text(
               item.label,
               textAlign: TextAlign.center,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 11,
                 fontWeight: FontWeight.w500,
-                color: AppColors.textPrimary,
+                color: AppColors.textPrimaryOf(context),
                 height: 1.3,
               ),
             ),

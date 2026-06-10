@@ -11,6 +11,11 @@ class AppSettings {
   final bool showDiscount;
   final String defaultPaymentMode;
   final int backupReminderDays;
+  // Notifications
+  final bool notifEnabled;
+  final bool notifMonthEndExpense;
+  final bool notifBackupReminder;
+  final bool notifLowStock;
 
   const AppSettings({
     this.dateFormat = 'dd/MM/yyyy',
@@ -21,6 +26,10 @@ class AppSettings {
     this.showDiscount = true,
     this.defaultPaymentMode = 'cash',
     this.backupReminderDays = 7,
+    this.notifEnabled = true,
+    this.notifMonthEndExpense = true,
+    this.notifBackupReminder = true,
+    this.notifLowStock = true,
   });
 
   AppSettings copyWith({
@@ -32,6 +41,10 @@ class AppSettings {
     bool? showDiscount,
     String? defaultPaymentMode,
     int? backupReminderDays,
+    bool? notifEnabled,
+    bool? notifMonthEndExpense,
+    bool? notifBackupReminder,
+    bool? notifLowStock,
   }) {
     return AppSettings(
       dateFormat: dateFormat ?? this.dateFormat,
@@ -42,6 +55,10 @@ class AppSettings {
       showDiscount: showDiscount ?? this.showDiscount,
       defaultPaymentMode: defaultPaymentMode ?? this.defaultPaymentMode,
       backupReminderDays: backupReminderDays ?? this.backupReminderDays,
+      notifEnabled: notifEnabled ?? this.notifEnabled,
+      notifMonthEndExpense: notifMonthEndExpense ?? this.notifMonthEndExpense,
+      notifBackupReminder: notifBackupReminder ?? this.notifBackupReminder,
+      notifLowStock: notifLowStock ?? this.notifLowStock,
     );
   }
 }
@@ -60,6 +77,10 @@ class SettingsNotifier extends AsyncNotifier<AppSettings> {
       showDiscount: (await DatabaseHelper.getSetting(AppStrings.kShowDiscount, defaultVal: 1)) == 1,
       defaultPaymentMode: await DatabaseHelper.getSettingStr(AppStrings.kDefaultPaymentMode, defaultVal: 'cash'),
       backupReminderDays: await DatabaseHelper.getSetting(AppStrings.kBackupReminderDays, defaultVal: 7),
+      notifEnabled: (await DatabaseHelper.getSetting(AppStrings.kNotifEnabled, defaultVal: 1)) == 1,
+      notifMonthEndExpense: (await DatabaseHelper.getSetting(AppStrings.kNotifMonthEndExpense, defaultVal: 1)) == 1,
+      notifBackupReminder: (await DatabaseHelper.getSetting(AppStrings.kNotifBackupReminder, defaultVal: 1)) == 1,
+      notifLowStock: (await DatabaseHelper.getSetting(AppStrings.kNotifLowStock, defaultVal: 1)) == 1,
     );
   }
 

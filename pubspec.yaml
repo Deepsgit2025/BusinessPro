@@ -35,8 +35,12 @@ dependencies:
   # Launching SMS / dialler / external apps
   url_launcher: ^6.3.1
 
-  # Image picking (logo/signature)
+  # Image picking (logo/signature, scan-bill camera/gallery)
   image_picker: ^1.1.2
+
+  # On-device OCR for "Scan Bill" (Android only; no network/API key).
+  # Downloads its text-recognition models on first use, then works offline.
+  google_mlkit_text_recognition: ^0.13.0
 
   # On-screen signature drawing pad
   signature: ^6.3.0
@@ -52,6 +56,11 @@ dependencies:
 
   # Light key-value settings
   shared_preferences: ^2.3.5
+
+  # Picking a .db file for "Restore from File".
+  # 12.0.0-beta is the first line compatible with win32 ^6 (required by
+  # share_plus 13); earlier file_picker pins win32 ^5 and conflicts.
+  file_picker: ">=12.0.0-beta.5 <13.0.0"
 dev_dependencies:
   flutter_test:
     sdk: flutter

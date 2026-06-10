@@ -23,13 +23,13 @@ class PurchaseReturnListScreen extends ConsumerWidget {
     final summaryAsync = ref.watch(purchaseReturnSummaryProvider);
 
     return Scaffold(
-      backgroundColor: AppColors.backgroundLight,
+      backgroundColor: AppColors.background(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: AppColors.textPrimary,
+        backgroundColor: AppColors.surface(context),
+        foregroundColor: AppColors.textPrimaryOf(context),
         elevation: 0,
         scrolledUnderElevation: 0,
-        shape: const Border(bottom: BorderSide(color: AppColors.divider)),
+        shape: Border(bottom: BorderSide(color: AppColors.dividerOf(context))),
         title: const Text('Purchase Return',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
       ),
@@ -66,6 +66,7 @@ class PurchaseReturnListScreen extends ConsumerWidget {
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 90),
                     itemCount: txns.length,
                     itemBuilder: (_, i) => _ReturnCard(
+                      key: ValueKey(txns[i].id),
                       txn: txns[i],
                       onTap: () => _open(context, ref, txns[i]),
                     ),
@@ -120,7 +121,7 @@ class _DateFilterBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Container(
-      color: Colors.white,
+      color: AppColors.surface(context),
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       child: Row(
         children: [
@@ -140,7 +141,7 @@ class _DateFilterBar extends ConsumerWidget {
           Container(
             width: 1,
             height: 24,
-            color: AppColors.divider,
+            color: AppColors.dividerOf(context),
             margin: const EdgeInsets.symmetric(horizontal: 12),
           ),
           Expanded(
@@ -158,8 +159,8 @@ class _DateFilterBar extends ConsumerWidget {
                       child: Text(
                         '${Formatters.dateShort(range.from)}   TO   '
                         '${Formatters.dateShort(range.to)}',
-                        style: const TextStyle(
-                            fontSize: 14, color: AppColors.textPrimary),
+                        style: TextStyle(
+                            fontSize: 14, color: AppColors.textPrimaryOf(context)),
                       ),
                     ),
                   ],
@@ -181,7 +182,7 @@ class _DateFilterBar extends ConsumerWidget {
     };
     final selected = await showModalBottomSheet<String>(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.surface(context),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
@@ -269,9 +270,9 @@ class _MetricCard extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.surface(context),
         borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: AppColors.border),
+        border: Border.all(color: AppColors.dividerOf(context)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -284,7 +285,7 @@ class _MetricCard extends StatelessWidget {
               style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
-                  color: valueColor ?? AppColors.textPrimary)),
+                  color: valueColor ?? AppColors.textPrimaryOf(context))),
         ],
       ),
     );
@@ -296,7 +297,7 @@ class _MetricCard extends StatelessWidget {
 class _ReturnCard extends StatelessWidget {
   final Transaction txn;
   final VoidCallback onTap;
-  const _ReturnCard({required this.txn, required this.onTap});
+  const _ReturnCard({super.key, required this.txn, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
@@ -305,7 +306,7 @@ class _ReturnCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: const BorderSide(color: AppColors.border),
+        side: BorderSide(color: AppColors.dividerOf(context)),
       ),
       child: InkWell(
         onTap: onTap,

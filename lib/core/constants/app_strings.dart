@@ -4,7 +4,7 @@ class AppStrings {
   static const appName = 'BusinessPro';
 
   // Nav labels
-  static const navDashboard = 'Dashboard';
+  static const navDashboard = 'Home';
   static const navSale = 'Sale';
   static const navPurchase = 'Purchase';
   static const navParties = 'Parties';
@@ -15,6 +15,7 @@ class AppStrings {
   static const drawerExpense = 'Expense';
   static const drawerIncome = 'Income';
   static const drawerCashBank = 'Cash & Bank';
+  static const drawerEmployees = 'Employees';
   static const drawerReports = 'Reports';
   static const drawerBackup = 'Backup';
   static const drawerSettings = 'Settings';
@@ -43,4 +44,16 @@ class AppStrings {
   static const kCompanySetupDone = 'company_setup_done';
   // Default transaction-share format: 'image' or 'pdf'. Empty ⇒ ask each time.
   static const kDefaultShareFormat = 'default_share_format';
+
+  // ── Notifications ──────────────────────────────────────────────────────────
+  // Master switch + per-type toggles (all default on).
+  static const kNotifEnabled = 'notif_enabled';
+  static const kNotifMonthEndExpense = 'notif_month_end_expense';
+  static const kNotifBackupReminder = 'notif_backup_reminder';
+  static const kNotifLowStock = 'notif_low_stock';
+  // Tracks the last expense-month the user dismissed, so a dismissed
+  // month-end reminder does not re-appear. Stored as 'yyyy-MM'.
+  static const kMonthEndExpenseDismissed = 'month_end_expense_dismissed';
+  // ISO date of the last successful backup, used by the backup reminder.
+  static const kLastBackupAt = 'last_backup_at';
 }

@@ -6,6 +6,7 @@ import '../../../core/providers/settings_provider.dart';
 import '../../../core/providers/theme_provider.dart';
 import '../../items/screens/tax_rates_screen.dart';
 import '../../items/screens/units_screen.dart';
+import 'notification_settings_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -29,6 +30,21 @@ class SettingsScreen extends ConsumerWidget {
               title: const Text('Dark Mode'),
               secondary: const Icon(Icons.dark_mode_outlined, color: AppColors.primary),
               activeThumbColor: AppColors.primary,
+            ),
+            const Divider(height: 0),
+
+            _SectionTile('Notifications'),
+            ListTile(
+              leading: const Icon(Icons.notifications_outlined,
+                  color: AppColors.primary),
+              title: const Text('Notifications'),
+              subtitle: const Text('Choose which alerts you receive'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const NotificationSettingsScreen()),
+              ),
             ),
             const Divider(height: 0),
 

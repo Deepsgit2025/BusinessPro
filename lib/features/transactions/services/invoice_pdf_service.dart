@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/services.dart' show rootBundle;
@@ -6,6 +7,7 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 
 import '../../../core/database/database_helper.dart';
+import '../../../core/utils/amount_to_words.dart';
 import '../../parties/repositories/party_repository.dart';
 import '../models/transaction.dart';
 import '../models/transaction_item.dart';
@@ -65,6 +67,22 @@ class InvoicePdfService {
     final symbol = (biz['currency_symbol'] as String?) ?? '₹';
     String money(num v) => '$symbol${_amountFmt.format(v)}';
 
+    // Business logo, if one has been set and the file still exists.
+    pw.MemoryImage? logo;
+    final logoPath = (biz['logo_path'] as String?)?.trim();
+    if (logoPath != null && logoPath.isNotEmpty) {
+      final f = File(logoPath);
+      if (await f.exists()) {
+        try {
+          logo = pw.MemoryImage(await f.readAsBytes());
+        } catch (_) {
+          // Corrupt/unsupported image — fall back to no logo rather than fail
+          // the whole PDF.
+          logo = null;
+        }
+      }
+    }
+
     // Set every font slot to a Noto Sans face (and a fallback) so no text ever
     // falls back to the built-in Courier, which has no rupee glyph / Unicode.
     final theme = pw.ThemeData.withFont(
@@ -81,16 +99,27 @@ class InvoicePdfService {
 
     doc.addPage(
       pw.MultiPage(
-        pageFormat: PdfPageFormat.a4,
-        margin: const pw.EdgeInsets.all(28),
+        pageTheme: pw.PageTheme(
+          pageFormat: PdfPageFormat.a4,
+          theme: theme,
+          margin: const pw.EdgeInsets.all(28),
+          // Paint the whole page white. Without this the PDF background is
+          // transparent, which dark-mode PDF viewers and the shared PNG raster
+          // render as black (the logo/photo then blends into the dark).
+          buildBackground: (context) => pw.FullPage(
+            ignoreMargins: true,
+            child: pw.Container(color: PdfColors.white),
+          ),
+        ),
         build: (context) => [
-          _header(biz, docTitle, transaction, money),
+          _header(biz, docTitle, transaction, money, logo),
           pw.SizedBox(height: 16),
           _partySection(biz, party, transaction),
           pw.SizedBox(height: 12),
           _itemsTable(items, money, hidePrices: hidePrices),
           pw.SizedBox(height: 10),
           if (!hidePrices) _totalsAndPayment(transaction, money),
+          if (!hidePrices) _amountInWords(transaction.totalAmount),
           pw.SizedBox(height: 16),
           // A challan (hidePrices) is treated like an estimate for the footer:
           // no bank / UPI-QR payment block.
@@ -109,6 +138,7 @@ class InvoicePdfService {
     String docTitle,
     Transaction t,
     String Function(num) money,
+    pw.MemoryImage? logo,
   ) {
     final bizName = (biz['name'] as String?)?.trim();
     final addressLines = <String>[
@@ -132,6 +162,15 @@ class InvoicePdfService {
           child: pw.Column(
             crossAxisAlignment: pw.CrossAxisAlignment.start,
             children: [
+              if (logo != null) ...[
+                pw.Container(
+                  height: 48,
+                  constraints: const pw.BoxConstraints(maxWidth: 140),
+                  child: pw.Image(logo, fit: pw.BoxFit.contain,
+                      alignment: pw.Alignment.centerLeft),
+                ),
+                pw.SizedBox(height: 6),
+              ],
               pw.Text(
                 bizName?.isNotEmpty == true ? bizName! : 'My Business',
                 style: pw.TextStyle(fontSize: 18, fontWeight: pw.FontWeight.bold),
@@ -383,6 +422,34 @@ class InvoicePdfService {
           ),
         ),
       ],
+    );
+  }
+
+  // ── Amount in words ───────────────────────────────────────────────────────
+
+  static pw.Widget _amountInWords(double total) {
+    return pw.Container(
+      width: double.infinity,
+      margin: const pw.EdgeInsets.only(top: 8),
+      padding: const pw.EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: pw.BoxDecoration(
+        color: PdfColors.grey100,
+        borderRadius: pw.BorderRadius.circular(4),
+      ),
+      child: pw.RichText(
+        text: pw.TextSpan(
+          children: [
+            pw.TextSpan(
+              text: 'Amount in words: ',
+              style: const pw.TextStyle(fontSize: 9, color: PdfColors.grey700),
+            ),
+            pw.TextSpan(
+              text: AmountToWords.rupees(total),
+              style: pw.TextStyle(fontSize: 9, fontWeight: pw.FontWeight.bold),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

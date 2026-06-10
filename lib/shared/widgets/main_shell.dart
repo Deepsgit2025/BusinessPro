@@ -3,7 +3,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/providers/business_provider.dart';
+import '../../core/providers/notification_provider.dart';
 import '../../features/dashboard/screens/dashboard_screen.dart';
+import '../../features/dashboard/widgets/notifications_sheet.dart';
 import '../../features/transactions/providers/transaction_providers.dart';
 import '../../features/transactions/screens/sale_list_screen.dart';
 import '../../features/transactions/screens/purchase_list_screen.dart';
@@ -104,20 +106,20 @@ class _MainShellState extends ConsumerState<MainShell> {
                 onChanged: _applySearch,
               )
             : Text(_titleFor(_selectedIndex)),
-        actions: _showSearch
-            ? [
-                IconButton(
-                  icon: Icon(_searching ? Icons.close : Icons.search),
-                  onPressed: () {
-                    if (_searching) {
-                      _stopSearching();
-                    } else {
-                      setState(() => _searching = true);
-                    }
-                  },
-                ),
-              ]
-            : null,
+        actions: [
+          if (_selectedIndex == 0) const _NotificationBell(),
+          if (_showSearch)
+            IconButton(
+              icon: Icon(_searching ? Icons.close : Icons.search),
+              onPressed: () {
+                if (_searching) {
+                  _stopSearching();
+                } else {
+                  setState(() => _searching = true);
+                }
+              },
+            ),
+        ],
       ),
       body: IndexedStack(
         index: _selectedIndex,
@@ -135,8 +137,8 @@ class _MainShellState extends ConsumerState<MainShell> {
         onTap: _onTabChange,
         items: const [
           BottomNavigationBarItem(
-            icon: Icon(Icons.dashboard_outlined),
-            activeIcon: Icon(Icons.dashboard),
+            icon: Icon(Icons.home_outlined),
+            activeIcon: Icon(Icons.home),
             label: AppStrings.navDashboard,
           ),
           BottomNavigationBarItem(
@@ -154,6 +156,51 @@ class _MainShellState extends ConsumerState<MainShell> {
             activeIcon: Icon(Icons.people),
             label: AppStrings.navParties,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bell icon in the dashboard app bar with a live count badge. Opens the
+/// notifications bottom sheet.
+class _NotificationBell extends ConsumerWidget {
+  const _NotificationBell();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(notificationCountProvider);
+    return IconButton(
+      tooltip: 'Notifications',
+      onPressed: () => showNotificationsSheet(context),
+      icon: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          const Icon(Icons.notifications_outlined),
+          if (count > 0)
+            Positioned(
+              right: -3,
+              top: -3,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                decoration: BoxDecoration(
+                  color: AppColors.expense,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.primary, width: 1.5),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  count > 9 ? '9+' : '$count',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    height: 1,
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );

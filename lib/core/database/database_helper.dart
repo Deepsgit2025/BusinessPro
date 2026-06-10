@@ -5,13 +5,36 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class DatabaseHelper {
   static const _dbName = 'business_pro.db';
-  static const _dbVersion = 6;
+  static const _dbVersion = 7;
 
   static Database? _db;
 
   static Future<Database> get database async {
     _db ??= await _initDb();
     return _db!;
+  }
+
+  /// Absolute path to the SQLite file (whether or not it's currently open).
+  /// Used by the backup module to copy / restore the database.
+  static Future<String> databasePath() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return join(dir.path, 'BusinessPro', _dbName);
+  }
+
+  /// Closes the open connection and drops the cached handle so the next
+  /// [database] access re-opens from disk. Required before overwriting the file
+  /// on restore — Windows holds a hard lock on the open .db otherwise.
+  static Future<void> close() async {
+    await _db?.close();
+    _db = null;
+  }
+
+  /// Re-opens the database after a restore (or any external file swap). The
+  /// next [database] access would re-open lazily anyway; this forces it eagerly
+  /// so callers can confirm the restored file opens cleanly.
+  static Future<void> reopen() async {
+    await close();
+    _db = await _initDb();
   }
 
   static Future<Database> _initDb() async {
@@ -240,6 +263,12 @@ class DatabaseHelper {
       // transaction commits.
       await db.execute('PRAGMA foreign_keys = ON');
     }
+
+    // v6 → v7: employee module. Two tables — `employees` (name + daily pay)
+    // and `attendance` (one row per employee per day, present/half/absent).
+    if (oldVersion < 7) {
+      await _createEmployeeTables(db);
+    }
   }
 
   static Future<void> _onConfigure(Database db) async {
@@ -316,6 +345,7 @@ class DatabaseHelper {
         invoice_counter     INTEGER DEFAULT 1,
         purchase_prefix     TEXT    DEFAULT 'PUR',
         purchase_counter    INTEGER DEFAULT 1,
+        receipt_counter     INTEGER DEFAULT 1,
         is_active           INTEGER DEFAULT 1,
         created_at          TEXT    DEFAULT (datetime('now')),
         updated_at          TEXT    DEFAULT (datetime('now'))
@@ -608,6 +638,51 @@ class DatabaseHelper {
         created_at       TEXT    DEFAULT (datetime('now'))
       )
     ''');
+
+    await _createEmployeeTables(db);
+  }
+
+  /// Employee module tables (v7). Extracted so both onCreate and the v7
+  /// migration share one definition.
+  ///
+  /// `daily_pay` is the wage for one full present day. Attendance is logged at
+  /// most once per employee per day (UNIQUE on employee_id + date); status is
+  /// 'present', 'half', or 'absent'. `day_value` snapshots the pay weight for
+  /// that day (1.0 / 0.5 / 0.0) so historical payroll is unaffected if the
+  /// half-day rule ever changes.
+  static Future<void> _createEmployeeTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE employees (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_id INTEGER NOT NULL REFERENCES businesses(id),
+        name        TEXT    NOT NULL,
+        phone       TEXT,
+        role        TEXT,
+        daily_pay   REAL    NOT NULL DEFAULT 0,
+        join_date   TEXT,
+        notes       TEXT,
+        is_active   INTEGER DEFAULT 1,
+        created_at  TEXT    DEFAULT (datetime('now')),
+        updated_at  TEXT    DEFAULT (datetime('now'))
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE attendance (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        date        TEXT    NOT NULL,
+        status      TEXT    NOT NULL DEFAULT 'present'
+                        CHECK(status IN ('present','half','absent')),
+        day_value   REAL    NOT NULL DEFAULT 1,
+        note        TEXT,
+        created_at  TEXT    DEFAULT (datetime('now')),
+        UNIQUE(employee_id, date)
+      )
+    ''');
+    await db.execute('CREATE INDEX idx_emp_business ON employees(business_id)');
+    await db.execute('CREATE INDEX idx_att_employee ON attendance(employee_id)');
+    await db.execute('CREATE INDEX idx_att_date     ON attendance(date)');
   }
 
   // ─────────────────────────────────────────

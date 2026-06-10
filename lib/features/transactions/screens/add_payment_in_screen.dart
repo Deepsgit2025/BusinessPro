@@ -224,13 +224,13 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
     final accounts = ref.watch(accountsProvider);
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.surface(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: AppColors.textPrimary,
+        backgroundColor: AppColors.surface(context),
+        foregroundColor: AppColors.textPrimaryOf(context),
         elevation: 0,
         scrolledUnderElevation: 0,
-        shape: const Border(bottom: BorderSide(color: AppColors.divider)),
+        shape: Border(bottom: BorderSide(color: AppColors.dividerOf(context))),
         title: const Text('Payment-In',
             style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
         actions: [
@@ -249,7 +249,7 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
               children: [
                 // ── Receipt No. + Date header ──────────────────────────────
                 Container(
-                  color: Colors.white,
+                  color: AppColors.surface(context),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 16, vertical: 12),
                   child: Row(
@@ -262,7 +262,7 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                         ),
                       ),
                       Container(
-                          width: 1, height: 36, color: AppColors.border),
+                          width: 1, height: 36, color: AppColors.dividerOf(context)),
                       Expanded(
                         child: GestureDetector(
                           onTap: _pickDate,
@@ -276,11 +276,11 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                     ],
                   ),
                 ),
-                const Divider(height: 1, color: AppColors.divider),
+                Divider(height: 1, color: AppColors.dividerOf(context)),
 
                 // ── Party Balance ──────────────────────────────────────────
                 Container(
-                  color: Colors.white,
+                  color: AppColors.surface(context),
                   padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
                   child: Align(
                     alignment: Alignment.centerRight,
@@ -302,7 +302,7 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                     onTap: _pickParty,
                     child: Container(
                       decoration: BoxDecoration(
-                        border: Border.all(color: AppColors.border),
+                        border: Border.all(color: AppColors.dividerOf(context)),
                         borderRadius: BorderRadius.circular(8),
                       ),
                       padding: const EdgeInsets.symmetric(
@@ -316,7 +316,7 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                                 fontSize: 15,
                                 color: _party == null
                                     ? AppColors.textHint
-                                    : AppColors.textPrimary,
+                                    : AppColors.textPrimaryOf(context),
                               ),
                             ),
                           ),
@@ -329,22 +329,22 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                 ),
 
                 const SizedBox(height: 4),
-                const Divider(height: 1, color: AppColors.divider),
+                Divider(height: 1, color: AppColors.dividerOf(context)),
 
                 // ── Received + Total Amount ────────────────────────────────
                 Container(
-                  color: const Color(0xFFF8F8F8),
+                  color: AppColors.background(context),
                   padding: const EdgeInsets.symmetric(
                       horizontal: 16, vertical: 16),
                   child: Column(
                     children: [
                       Row(
                         children: [
-                          const Text('Received',
+                          Text('Received',
                               style: TextStyle(
                                   fontSize: 16,
                                   fontWeight: FontWeight.w600,
-                                  color: AppColors.textPrimary)),
+                                  color: AppColors.textPrimaryOf(context))),
                           const Spacer(),
                           const Text('₹',
                               style: TextStyle(
@@ -363,10 +363,10 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                                     RegExp(r'^\d*\.?\d*')),
                               ],
                               textAlign: TextAlign.right,
-                              style: const TextStyle(
+                              style: TextStyle(
                                   fontSize: 20,
                                   fontWeight: FontWeight.w600,
-                                  color: AppColors.textPrimary),
+                                  color: AppColors.textPrimaryOf(context)),
                               decoration: const InputDecoration(
                                 border: UnderlineInputBorder(
                                   borderSide: BorderSide(
@@ -416,7 +416,7 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                   ),
                 ),
 
-                const Divider(height: 1, color: AppColors.divider),
+                Divider(height: 1, color: AppColors.dividerOf(context)),
 
                 // ── Payment Type ───────────────────────────────────────────
                 modes.when(
@@ -427,15 +427,15 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                         list.where((m) => m.type == 'cash').firstOrNull?.id ??
                             list.firstOrNull?.id;
                     return Container(
-                      color: Colors.white,
+                      color: AppColors.surface(context),
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 4),
                       child: Row(
                         children: [
-                          const Text('Payment Type',
+                          Text('Payment Type',
                               style: TextStyle(
                                   fontSize: 14,
-                                  color: AppColors.textPrimary)),
+                                  color: AppColors.textPrimaryOf(context))),
                           const Spacer(),
                           DropdownButton<int>(
                             value: _paymentModeId,
@@ -462,15 +462,15 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                         list.where((a) => a.isDefault).firstOrNull?.id ??
                             list.firstOrNull?.id;
                     return Container(
-                      color: Colors.white,
+                      color: AppColors.surface(context),
                       padding: const EdgeInsets.symmetric(
                           horizontal: 16, vertical: 4),
                       child: Row(
                         children: [
-                          const Text('Deposit To',
+                          Text('Deposit To',
                               style: TextStyle(
                                   fontSize: 14,
-                                  color: AppColors.textPrimary)),
+                                  color: AppColors.textPrimaryOf(context))),
                           const Spacer(),
                           DropdownButton<int>(
                             value: _accountId,
@@ -489,7 +489,7 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                   },
                 ),
 
-                const Divider(height: 1, color: AppColors.divider),
+                Divider(height: 1, color: AppColors.dividerOf(context)),
 
                 // ── Description / Note ─────────────────────────────────────
                 Padding(
@@ -504,11 +504,11 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                       border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
                           borderSide:
-                              const BorderSide(color: AppColors.border)),
+                              BorderSide(color: AppColors.dividerOf(context))),
                       enabledBorder: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(8),
                           borderSide:
-                              const BorderSide(color: AppColors.border)),
+                              BorderSide(color: AppColors.dividerOf(context))),
                     ),
                   ),
                 ),

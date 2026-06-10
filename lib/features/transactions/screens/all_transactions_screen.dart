@@ -236,7 +236,7 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F5F5),
+      backgroundColor: AppColors.background(context),
       bottomNavigationBar: (widget.addLabel != null && widget.onAdd != null)
           ? _AddBottomBar(
               label: widget.addLabel!,
@@ -261,7 +261,7 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
         children: [
           // ── Date range row ───────────────────────────────────────────────
           Container(
-            color: Colors.white,
+            color: AppColors.surface(context),
             padding:
                 const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             child: Row(
@@ -279,9 +279,9 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
                           size: 16, color: AppColors.primary),
                       const SizedBox(width: 4),
                       Text(Formatters.date(_filter.from.toIso8601String()),
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 13,
-                              color: AppColors.textPrimary,
+                              color: AppColors.textPrimaryOf(context),
                               fontWeight: FontWeight.w500)),
                       const Padding(
                         padding: EdgeInsets.symmetric(horizontal: 6),
@@ -291,9 +291,9 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
                                 color: AppColors.textSecondary)),
                       ),
                       Text(Formatters.date(_filter.to.toIso8601String()),
-                          style: const TextStyle(
+                          style: TextStyle(
                               fontSize: 13,
-                              color: AppColors.textPrimary,
+                              color: AppColors.textPrimaryOf(context),
                               fontWeight: FontWeight.w500)),
                     ],
                   ),
@@ -301,12 +301,12 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
               ],
             ),
           ),
-          const Divider(height: 1, color: AppColors.divider),
+          Divider(height: 1, color: AppColors.dividerOf(context)),
 
           // ── Type dropdown (hidden when locked to a single type) ──────────
           if (widget.lockedTxnType == null) ...[
             Container(
-              color: Colors.white,
+              color: AppColors.surface(context),
               padding:
                   const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
               child: Row(
@@ -317,9 +317,9 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
                       isExpanded: true,
                       underline: const SizedBox.shrink(),
                       icon: const Icon(Icons.arrow_drop_down),
-                      style: const TextStyle(
+                      style: TextStyle(
                           fontSize: 14,
-                          color: AppColors.textPrimary,
+                          color: AppColors.textPrimaryOf(context),
                           fontWeight: FontWeight.w500),
                       items: _txnTypeLabels.entries
                           .map((e) => DropdownMenuItem<String?>(
@@ -334,12 +334,12 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
                 ],
               ),
             ),
-            const Divider(height: 1, color: AppColors.divider),
+            Divider(height: 1, color: AppColors.dividerOf(context)),
           ],
 
           // ── Party filter ─────────────────────────────────────────────────
           Container(
-            color: Colors.white,
+            color: AppColors.surface(context),
             padding:
                 const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Row(
@@ -378,7 +378,7 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
               ],
             ),
           ),
-          const Divider(height: 1, color: AppColors.divider),
+          Divider(height: 1, color: AppColors.dividerOf(context)),
 
           // ── Transaction list ─────────────────────────────────────────────
           Expanded(
@@ -393,10 +393,11 @@ class _AllTransactionsScreenState extends State<AllTransactionsScreen> {
                         padding: EdgeInsets.zero,
                         itemCount: _txns.length,
                         separatorBuilder: (_, _) =>
-                            const Divider(height: 1, color: AppColors.divider),
+                            Divider(height: 1, color: AppColors.dividerOf(context)),
                         itemBuilder: (context, i) {
                           final t = _txns[i];
                           return _TxnRow(
+                            key: ValueKey(t.id),
                             txn: t,
                             onTap: () async {
                               await Navigator.push(
@@ -433,16 +434,16 @@ class _PeriodChip extends StatelessWidget {
         padding:
             const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
         decoration: BoxDecoration(
-          color: AppColors.backgroundLight,
+          color: AppColors.background(context),
           borderRadius: BorderRadius.circular(4),
-          border: Border.all(color: AppColors.border),
+          border: Border.all(color: AppColors.dividerOf(context)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             Text(label,
-                style: const TextStyle(
-                    fontSize: 12, color: AppColors.textPrimary)),
+                style: TextStyle(
+                    fontSize: 12, color: AppColors.textPrimaryOf(context))),
             const SizedBox(width: 4),
             const Icon(Icons.arrow_drop_down,
                 size: 16, color: AppColors.textSecondary),
@@ -458,7 +459,7 @@ class _PeriodChip extends StatelessWidget {
 class _TxnRow extends StatelessWidget {
   final Transaction txn;
   final VoidCallback onTap;
-  const _TxnRow({required this.txn, required this.onTap});
+  const _TxnRow({super.key, required this.txn, required this.onTap});
 
   String get _typeLabel =>
       _txnTypeLabels[txn.transactionType] ?? txn.transactionType;
@@ -468,7 +469,7 @@ class _TxnRow extends StatelessWidget {
     return InkWell(
       onTap: onTap,
       child: Container(
-        color: Colors.white,
+        color: AppColors.surface(context),
         padding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
         child: Row(
@@ -478,10 +479,10 @@ class _TxnRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(txn.partyName ?? '—',
-                      style: const TextStyle(
+                      style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.w600,
-                          color: AppColors.textPrimary)),
+                          color: AppColors.textPrimaryOf(context))),
                   const SizedBox(height: 2),
                   Text(
                       Formatters.date(txn.transactionDate),
@@ -500,10 +501,10 @@ class _TxnRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text('Total : ${Formatters.currency(txn.totalAmount)}',
-                    style: const TextStyle(
+                    style: TextStyle(
                         fontSize: 13,
                         fontWeight: FontWeight.w600,
-                        color: AppColors.textPrimary)),
+                        color: AppColors.textPrimaryOf(context))),
                 if (txn.balanceAmount > 0)
                   Text('Balance : ${Formatters.currency(txn.balanceAmount)}',
                       style: const TextStyle(
@@ -582,7 +583,7 @@ class _PartyFilterSheetState extends State<_PartyFilterSheet> {
             width: 40,
             height: 4,
             decoration: BoxDecoration(
-                color: AppColors.border,
+                color: AppColors.dividerOf(context),
                 borderRadius: BorderRadius.circular(2)),
           ),
           Padding(
@@ -602,7 +603,7 @@ class _PartyFilterSheetState extends State<_PartyFilterSheet> {
               controller: ctrl,
               itemCount: filtered.length,
               separatorBuilder: (_, _) =>
-                  const Divider(height: 1, color: AppColors.divider),
+                  Divider(height: 1, color: AppColors.dividerOf(context)),
               itemBuilder: (_, i) {
                 final p = filtered[i];
                 return ListTile(

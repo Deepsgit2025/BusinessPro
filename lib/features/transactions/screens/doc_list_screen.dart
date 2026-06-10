@@ -54,13 +54,13 @@ class DocListScreen extends ConsumerWidget {
     final listAsync = ref.watch(_listProvider);
 
     return Scaffold(
-      backgroundColor: AppColors.backgroundLight,
+      backgroundColor: AppColors.background(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        foregroundColor: AppColors.textPrimary,
+        backgroundColor: AppColors.surface(context),
+        foregroundColor: AppColors.textPrimaryOf(context),
         elevation: 0,
         scrolledUnderElevation: 0,
-        shape: const Border(bottom: BorderSide(color: AppColors.divider)),
+        shape: Border(bottom: BorderSide(color: AppColors.dividerOf(context))),
         title: Text(_title,
             style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
       ),
@@ -68,7 +68,7 @@ class DocListScreen extends ConsumerWidget {
         children: [
           // ── Status tabs (All / Open / Closed) ───────────────────────────
           Container(
-            color: Colors.white,
+            color: AppColors.surface(context),
             padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
             child: Row(
               children: [
@@ -102,14 +102,14 @@ class DocListScreen extends ConsumerWidget {
                 prefixIcon: const Icon(Icons.search, color: AppColors.primary),
                 isDense: true,
                 filled: true,
-                fillColor: Colors.white,
+                fillColor: AppColors.surface(context),
                 border: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: AppColors.border),
+                  borderSide: BorderSide(color: AppColors.dividerOf(context)),
                 ),
                 enabledBorder: OutlineInputBorder(
                   borderRadius: BorderRadius.circular(10),
-                  borderSide: const BorderSide(color: AppColors.border),
+                  borderSide: BorderSide(color: AppColors.dividerOf(context)),
                 ),
               ),
               onChanged: (v) => ref.read(_filterProvider.notifier).state =
@@ -142,6 +142,7 @@ class DocListScreen extends ConsumerWidget {
                     padding: const EdgeInsets.fromLTRB(12, 8, 12, 90),
                     itemCount: txns.length,
                     itemBuilder: (_, i) => _DocCard(
+                      key: ValueKey(txns[i].id),
                       txn: txns[i],
                       convertLabel: _convertLabel,
                       onTap: () => _open(context, ref, txns[i]),
@@ -238,10 +239,10 @@ class _StatusTab extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected
               ? AppColors.expense.withValues(alpha: 0.1)
-              : Colors.white,
+              : AppColors.surface(context),
           borderRadius: BorderRadius.circular(20),
           border: Border.all(
-            color: selected ? AppColors.expense : AppColors.border,
+            color: selected ? AppColors.expense : AppColors.dividerOf(context),
           ),
         ),
         child: Text(
@@ -268,6 +269,7 @@ class _DocCard extends StatelessWidget {
   final VoidCallback? onConvert;
 
   const _DocCard({
+    super.key,
     required this.txn,
     required this.convertLabel,
     required this.onTap,
@@ -283,7 +285,7 @@ class _DocCard extends StatelessWidget {
       margin: const EdgeInsets.only(bottom: 10),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(10),
-        side: const BorderSide(color: AppColors.border),
+        side: BorderSide(color: AppColors.dividerOf(context)),
       ),
       child: InkWell(
         onTap: onTap,

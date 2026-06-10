@@ -26,13 +26,11 @@ class AppDrawer extends ConsumerWidget {
             child: Container(
               width: double.infinity,
               decoration: const BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [AppColors.primaryDark, AppColors.primary],
-                ),
+                gradient: AppColors.brandGradient,
               ),
               padding: EdgeInsets.only(
-                top: MediaQuery.of(context).padding.top + 16,
-                bottom: 16,
+                top: MediaQuery.of(context).padding.top + 22,
+                bottom: 22,
                 left: 16,
                 right: 16,
               ),
@@ -42,32 +40,60 @@ class AppDrawer extends ConsumerWidget {
                   child: Center(child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)),
                 ),
                 error: (_, err) => const SizedBox.shrink(),
-                data: (biz) => Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.center,
-                  children: [
-                    Text(
-                      biz?['name'] as String? ?? 'My Business',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.3,
+                data: (biz) {
+                  final name = (biz?['name'] as String?)?.trim();
+                  final displayName =
+                      (name != null && name.isNotEmpty) ? name : 'My Business';
+                  final initial = displayName.characters.first.toUpperCase();
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.center,
+                    children: [
+                      Container(
+                        height: 64,
+                        width: 64,
+                        decoration: BoxDecoration(
+                          color: Colors.white.withValues(alpha: 0.18),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: Colors.white.withValues(alpha: 0.35),
+                            width: 2,
+                          ),
+                        ),
+                        alignment: Alignment.center,
+                        child: Text(
+                          initial,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 28,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      biz?['gstin'] as String? ?? 'Tap to set up profile',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.85),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w500,
+                      const SizedBox(height: 12),
+                      Text(
+                        displayName,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 17,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 0.3,
+                        ),
                       ),
-                    ),
-                  ],
-                ),
+                      const SizedBox(height: 4),
+                      Text(
+                        biz?['gstin'] as String? ?? 'Tap to set up profile',
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.85),
+                          fontSize: 12,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ),
@@ -93,9 +119,19 @@ class AppDrawer extends ConsumerWidget {
                   Navigator.pop(context);
                   Navigator.pushNamed(context, '/cash-bank');
                 }),
+                _DrawerItem(Icons.groups_2_outlined, AppStrings.drawerEmployees, () {
+                  Navigator.pop(context);
+                  Navigator.pushNamed(context, '/employees');
+                }),
                 const Divider(),
-                _DrawerItem(Icons.bar_chart, AppStrings.drawerReports, () => Navigator.pop(context)),
-                _DrawerItem(Icons.backup_outlined, AppStrings.drawerBackup, () => Navigator.pop(context)),
+                _DrawerItem(Icons.bar_chart, AppStrings.drawerReports, () {
+                  Navigator.pop(context);
+                  Navigator.pushNamed(context, '/reports');
+                }),
+                _DrawerItem(Icons.backup_outlined, AppStrings.drawerBackup, () {
+                  Navigator.pop(context);
+                  Navigator.pushNamed(context, '/backup');
+                }),
                 const Divider(),
                 _DrawerItem(Icons.settings_outlined, AppStrings.drawerSettings, () {
                   Navigator.pop(context);
