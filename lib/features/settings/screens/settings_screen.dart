@@ -135,6 +135,16 @@ class SettingsScreen extends ConsumerWidget {
             ),
             const Divider(height: 0),
 
+            _SectionTile('Sync'),
+            ListTile(
+              leading: const Icon(Icons.sync, color: AppColors.primary),
+              title: const Text('Sync & Devices'),
+              subtitle: const Text('Google Drive sync, linked devices'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.pushNamed(context, '/sync'),
+            ),
+            const Divider(height: 0),
+
             _SectionTile('Backup'),
             ListTile(
               leading: const Icon(Icons.backup_outlined, color: AppColors.primary),

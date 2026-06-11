@@ -18,6 +18,7 @@ class AppStrings {
   static const drawerEmployees = 'Employees';
   static const drawerReports = 'Reports';
   static const drawerBackup = 'Backup';
+  static const drawerSync = 'Sync & Devices';
   static const drawerSettings = 'Settings';
   static const drawerCompanyProfile = 'Company Profile';
 
@@ -56,4 +57,14 @@ class AppStrings {
   static const kMonthEndExpenseDismissed = 'month_end_expense_dismissed';
   // ISO date of the last successful backup, used by the backup reminder.
   static const kLastBackupAt = 'last_backup_at';
+
+  // ── Phase 5: Google Drive sync ──────────────────────────────────────────────
+  // This device's stable sync id (also read by the DB insert triggers).
+  static const kSyncDeviceId = 'sync_device_id';
+  // Cached Google account email shown in the sync settings screen (Android).
+  static const kSyncAccountEmail = 'sync_account_email';
+  // Drive OAuth access token + its expiry (ISO-8601). On Android these come from
+  // Google Sign-In; on Windows they arrive via the QR handoff.
+  static const kDriveAccessToken = 'drive_access_token';
+  static const kDriveTokenExpiry = 'drive_token_expiry';
 }

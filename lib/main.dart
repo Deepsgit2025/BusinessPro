@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'core/constants/app_strings.dart';
+import 'firebase_options.dart';
 import 'core/constants/app_theme.dart';
 import 'core/database/database_helper.dart';
 import 'core/providers/theme_provider.dart';
@@ -15,6 +17,7 @@ import 'features/backup/screens/backup_screen.dart';
 import 'features/items/screens/items_list_screen.dart';
 import 'features/reports/screens/reports_home_screen.dart';
 import 'features/settings/screens/settings_screen.dart';
+import 'features/sync/screens/sync_settings_screen.dart';
 import 'shared/widgets/main_shell.dart';
 
 Future<void> main() async {
@@ -24,6 +27,8 @@ Future<void> main() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   }
+
+  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
 
   // Initialize DB — creates all tables + seeds data on first run
   await DatabaseHelper.database;
@@ -60,6 +65,7 @@ class BusinessProApp extends ConsumerWidget {
         '/reports': (_) => const ReportsHomeScreen(),
         '/backup': (_) => const BackupScreen(),
         '/settings': (_) => const SettingsScreen(),
+        '/sync': (_) => const SyncSettingsScreen(),
       },
     );
   }

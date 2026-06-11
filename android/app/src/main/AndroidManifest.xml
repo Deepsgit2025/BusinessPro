@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Phase 5 sync talks to Google Drive + Firebase over the network. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Legacy storage write for "Save to Device" → public Downloads on
          Android ≤10. On Android 11+ this permission is ignored (scoped storage);
          the app writes app-created files to the public Downloads path directly,

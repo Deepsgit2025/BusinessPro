@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "772018233967",
+    "project_id": "businesspro-forfun",
+    "storage_bucket": "businesspro-forfun.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:772018233967:android:45255f9a0f5d1c64cd239a",
+        "android_client_info": {
+          "package_name": "com.businesspro.app"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "772018233967-ivag2rd67b2a6th572rhudu7glhk5pto.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.businesspro.app",
+            "certificate_hash": "f8cc0c349741fc4043b28dc6d82f8c457b9e6389"
+          }
+        },
+        {
+          "client_id": "772018233967-97rj7rd2qc23efce1gvos9bkrd45o24i.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCGWJMpmKAenNOmKw9oFXzpoTb9sowzO60"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "772018233967-97rj7rd2qc23efce1gvos9bkrd45o24i.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -5,7 +5,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class DatabaseHelper {
   static const _dbName = 'business_pro.db';
-  static const _dbVersion = 7;
+  static const _dbVersion = 8;
 
   static Database? _db;
 
@@ -269,6 +269,18 @@ class DatabaseHelper {
     if (oldVersion < 7) {
       await _createEmployeeTables(db);
     }
+
+    // v7 → v8: Phase 5 Google Drive sync. Adds row-level sync metadata (uuid +
+    // device_id + is_synced + server_updated_at) to every synced table, the
+    // sync_log / devices / sync_state tables, INSERT triggers that stamp uuid +
+    // device_id automatically (so no repository code changes), and a one-time
+    // UUID backfill for existing rows.
+    if (oldVersion < 8) {
+      await _createSyncColumns(db);
+      await _createSyncTables(db);
+      await _createSyncTriggers(db);
+      await _backfillSyncUuids(db);
+    }
   }
 
   static Future<void> _onConfigure(Database db) async {
@@ -298,6 +310,14 @@ class DatabaseHelper {
     await _createIndexes(db);
     await _createTriggers(db);
     await _seedDefaultData(db);
+    // Phase 5 sync schema. Reuse the exact same steps as the v8 upgrade so a
+    // fresh DB and an upgraded DB end up identical: add the per-row sync columns,
+    // the sync-support tables, the uuid/device_id stamping triggers, then backfill
+    // UUIDs onto the rows seeded above (which predate the triggers).
+    await _createSyncColumns(db);
+    await _createSyncTables(db);
+    await _createSyncTriggers(db);
+    await _backfillSyncUuids(db);
   }
 
   // ─────────────────────────────────────────
@@ -686,6 +706,177 @@ class DatabaseHelper {
   }
 
   // ─────────────────────────────────────────
+  // PHASE 5 — SYNC SCHEMA
+  // ─────────────────────────────────────────
+
+  /// Tables that participate in two-way sync. The UI joins/inserts these by
+  /// integer id locally, but across devices the `uuid` column is the identity.
+  static const syncedTables = <String>[
+    'transactions',
+    'transaction_items',
+    'payments',
+    'parties',
+    'items',
+    'item_units',
+    'accounts',
+    'expense_categories',
+    'item_categories',
+  ];
+
+  /// Per-row sync metadata. Every synced table gets a `uuid` (the cross-device
+  /// identity). The "main" tables additionally get device_id / is_synced /
+  /// server_updated_at so the engine can attribute and track them; child tables
+  /// (transaction_items) and master lists carry uuid alone and ride their
+  /// parent's timestamps. Adding a column that already exists throws, so each
+  /// ALTER is guarded — this lets the method run on both fresh and upgraded DBs.
+  static Future<void> _createSyncColumns(Database db) async {
+    // uuid on every synced table.
+    for (final t in syncedTables) {
+      await _addColumnIfMissing(db, t, 'uuid', 'TEXT');
+    }
+    // Sync-tracking columns on the tables the engine tracks individually.
+    const tracked = [
+      'transactions',
+      'parties',
+      'items',
+      'payments',
+      'accounts',
+      'expense_categories',
+      'item_categories',
+      'item_units',
+    ];
+    for (final t in tracked) {
+      await _addColumnIfMissing(db, t, 'device_id', 'TEXT');
+      await _addColumnIfMissing(db, t, 'is_synced', 'INTEGER DEFAULT 0');
+      await _addColumnIfMissing(db, t, 'server_updated_at', 'TEXT');
+    }
+    // transaction_items has no updated_at of its own; give it one so edited
+    // lines carry a fresh timestamp the merge can compare.
+    await _addColumnIfMissing(db, 'transaction_items', 'device_id', 'TEXT');
+    await _addColumnIfMissing(db, 'transaction_items', 'is_synced', 'INTEGER DEFAULT 0');
+    await _addColumnIfMissing(db, 'transaction_items', 'updated_at', 'TEXT');
+    await _addColumnIfMissing(db, 'transaction_items', 'server_updated_at', 'TEXT');
+  }
+
+  /// Adds [column] to [table] only if it isn't already present. PRAGMA
+  /// table_info is cheap and avoids relying on a thrown "duplicate column" error.
+  static Future<void> _addColumnIfMissing(
+      Database db, String table, String column, String type) async {
+    final cols = await db.rawQuery('PRAGMA table_info($table)');
+    final exists = cols.any((c) => c['name'] == column);
+    if (!exists) {
+      await db.execute('ALTER TABLE $table ADD COLUMN $column $type');
+    }
+  }
+
+  /// The sync bookkeeping tables: an activity log (drives the dashboard bell),
+  /// a registry of linked devices, and a single sync_state row holding the Drive
+  /// folder/file ids and last-sync high-water marks.
+  static Future<void> _createSyncTables(Database db) async {
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        sync_type     TEXT NOT NULL,
+        table_name    TEXT,
+        records_count INTEGER DEFAULT 0,
+        device_source TEXT,
+        description   TEXT,
+        synced_at     TEXT DEFAULT (datetime('now')),
+        is_read       INTEGER DEFAULT 0
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS devices (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        device_id   TEXT NOT NULL UNIQUE,
+        device_name TEXT,
+        device_type TEXT NOT NULL CHECK(device_type IN ('android','windows')),
+        linked_at   TEXT DEFAULT (datetime('now')),
+        last_seen   TEXT
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_state (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_id             INTEGER NOT NULL,
+        last_sync_at            TEXT,
+        last_upload_at          TEXT,
+        last_download_at        TEXT,
+        drive_folder_id         TEXT,
+        android_changes_file_id TEXT,
+        windows_changes_file_id TEXT
+      )
+    ''');
+
+    // Seed the single sync_state row so the engine can always UPDATE it.
+    final existing = await db.rawQuery('SELECT COUNT(*) AS c FROM sync_state');
+    if (((existing.first['c'] as int?) ?? 0) == 0) {
+      await db.insert('sync_state', {'business_id': 1});
+    }
+  }
+
+  /// AFTER INSERT triggers that stamp `uuid` (and `device_id` where the column
+  /// exists) on any new row in a synced table. This captures inserts made by the
+  /// existing repositories without changing a single repository — they keep
+  /// calling db.insert and the trigger fills the sync metadata.
+  ///
+  /// uuid is generated as a 36-char canonical v4-shaped string from randomblob,
+  /// so it interoperates with Dart's Uuid().v4() on the other device (both are
+  /// just opaque unique keys for matching). device_id is read from the
+  /// `sync_device_id` settings row (NULL until the device registers — harmless;
+  /// the engine backfills it on first sync).
+  static Future<void> _createSyncTriggers(Database db) async {
+    for (final t in syncedTables) {
+      // Whether this table has a device_id column to stamp.
+      final cols = await db.rawQuery('PRAGMA table_info($t)');
+      final hasDevice = cols.any((c) => c['name'] == 'device_id');
+      final deviceClause = hasDevice
+          ? ", device_id = COALESCE(NEW.device_id, "
+              "(SELECT value FROM settings WHERE business_id = 1 AND key = 'sync_device_id'))"
+          : '';
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS trg_sync_uuid_$t
+        AFTER INSERT ON $t
+        WHEN NEW.uuid IS NULL
+        BEGIN
+          UPDATE $t
+          SET uuid = (
+            lower(hex(randomblob(4))) || '-' ||
+            lower(hex(randomblob(2))) || '-4' ||
+            substr(lower(hex(randomblob(2))), 2) || '-' ||
+            substr('89ab', abs(random()) % 4 + 1, 1) ||
+            substr(lower(hex(randomblob(2))), 2) || '-' ||
+            lower(hex(randomblob(6)))
+          )$deviceClause
+          WHERE id = NEW.id;
+        END
+      ''');
+    }
+  }
+
+  /// One-time backfill: give every pre-existing row a uuid. Runs after the
+  /// triggers exist, but operates on rows inserted before them (seed data on a
+  /// fresh DB, or the user's real data on upgrade). Uses the same generation
+  /// expression as the trigger for consistency.
+  static Future<void> _backfillSyncUuids(Database db) async {
+    for (final t in syncedTables) {
+      await db.execute('''
+        UPDATE $t SET uuid = (
+          lower(hex(randomblob(4))) || '-' ||
+          lower(hex(randomblob(2))) || '-4' ||
+          substr(lower(hex(randomblob(2))), 2) || '-' ||
+          substr('89ab', abs(random()) % 4 + 1, 1) ||
+          substr(lower(hex(randomblob(2))), 2) || '-' ||
+          lower(hex(randomblob(6)))
+        )
+        WHERE uuid IS NULL
+      ''');
+    }
+  }
+
+  // ─────────────────────────────────────────
   // INDEXES
   // ─────────────────────────────────────────
 
@@ -1039,5 +1230,51 @@ class DatabaseHelper {
   static Future<String> peekReceiptNumber() async {
     final biz = await getBusiness();
     return ((biz?['receipt_counter'] as int?) ?? 1).toString();
+  }
+
+  // ─────────────────────────────────────────
+  // SYNC HELPERS (Phase 5)
+  // ─────────────────────────────────────────
+
+  /// This device's stable sync id, created on first call and persisted in
+  /// settings. The insert triggers read it (key `sync_device_id`) to stamp new
+  /// rows, so it must exist before the first write that should be attributed.
+  static Future<String> getOrCreateDeviceId() async {
+    var id = await getSettingStr('sync_device_id');
+    if (id.isEmpty) {
+      // A v4-shaped id; generated here rather than importing uuid into the DB
+      // layer to keep this file dependency-free.
+      final db = await database;
+      final rows = await db.rawQuery('''
+        SELECT (
+          lower(hex(randomblob(4))) || '-' ||
+          lower(hex(randomblob(2))) || '-4' ||
+          substr(lower(hex(randomblob(2))), 2) || '-' ||
+          substr('89ab', abs(random()) % 4 + 1, 1) ||
+          substr(lower(hex(randomblob(2))), 2) || '-' ||
+          lower(hex(randomblob(6)))
+        ) AS id
+      ''');
+      id = rows.first['id'] as String;
+      await setSetting('sync_device_id', id);
+    }
+    return id;
+  }
+
+  /// The single sync_state row (created in [_createSyncTables]).
+  static Future<Map<String, dynamic>> syncState() async {
+    final db = await database;
+    final rows = await db.query('sync_state', where: 'id = 1', limit: 1);
+    if (rows.isEmpty) {
+      await db.insert('sync_state', {'business_id': 1});
+      return (await db.query('sync_state', where: 'id = 1', limit: 1)).first;
+    }
+    return rows.first;
+  }
+
+  /// Patches the single sync_state row.
+  static Future<void> updateSyncState(Map<String, dynamic> data) async {
+    final db = await database;
+    await db.update('sync_state', data, where: 'id = 1');
   }
 }

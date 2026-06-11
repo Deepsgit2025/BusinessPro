@@ -133,6 +133,10 @@ class AppDrawer extends ConsumerWidget {
                   Navigator.pushNamed(context, '/backup');
                 }),
                 const Divider(),
+                _DrawerItem(Icons.sync, AppStrings.drawerSync, () {
+                  Navigator.pop(context);
+                  Navigator.pushNamed(context, '/sync');
+                }),
                 _DrawerItem(Icons.settings_outlined, AppStrings.drawerSettings, () {
                   Navigator.pop(context);
                   Navigator.pushNamed(context, '/settings');

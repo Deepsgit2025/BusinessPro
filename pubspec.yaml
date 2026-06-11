@@ -57,6 +57,22 @@ dependencies:
   # Light key-value settings
   shared_preferences: ^2.3.5
 
+  # Firebase
+  firebase_core: ^3.15.1
+  cloud_firestore: ^5.6.9
+
+  # ── Phase 5: Google Drive sync ──────────────────────────────────────────────
+  # Google Sign-In (Android only — used to obtain a Drive OAuth token). Windows
+  # never calls this; it receives the token via the QR handoff instead.
+  google_sign_in: ^6.2.1
+  # HTTP client for the Drive v3 REST calls (works on Android + Windows).
+  http: ^1.2.2
+  # QR generator (Android shows the link code) + scanner (Windows reads it).
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^5.2.3
+  # Detect internet availability before attempting a sync.
+  connectivity_plus: ^6.1.0
+
   # Picking a .db file for "Restore from File".
   # 12.0.0-beta is the first line compatible with win32 ^6 (required by
   # share_plus 13); earlier file_picker pins win32 ^5 and conflicts.

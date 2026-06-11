@@ -9,6 +9,7 @@ import '../models/transaction.dart';
 import '../models/transaction_item.dart';
 import '../repositories/transaction_repository.dart';
 import '../repositories/txn_meta_repository.dart';
+import '../../../services/sync/sync_providers.dart';
 
 // ── Repositories ────────────────────────────────────────────────────────────
 final transactionRepositoryProvider =
@@ -327,6 +328,10 @@ void invalidateTransactionData(Ref ref) {
   ref.invalidate(incomeListProvider);
   ref.invalidate(recentTransactionsProvider);
   ref.invalidate(accountsProvider);
+  // Phase 5: nudge a (debounced, silent) sync after any transaction write.
+  try {
+    ref.read(syncSchedulerProvider).onTransactionSaved();
+  } catch (_) {/* sync not ready — periodic/resume triggers will catch up */}
 }
 
 extension TransactionDataRefresh on WidgetRef {
@@ -347,5 +352,9 @@ extension TransactionDataRefresh on WidgetRef {
     invalidate(incomeListProvider);
     invalidate(recentTransactionsProvider);
     invalidate(accountsProvider);
+    // Phase 5: trigger a debounced silent sync after the write.
+    try {
+      read(syncSchedulerProvider).onTransactionSaved();
+    } catch (_) {/* sync not ready yet */}
   }
 }

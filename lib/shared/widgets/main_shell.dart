@@ -10,6 +10,8 @@ import '../../features/transactions/providers/transaction_providers.dart';
 import '../../features/transactions/screens/sale_list_screen.dart';
 import '../../features/transactions/screens/purchase_list_screen.dart';
 import '../../features/parties/screens/parties_screen.dart';
+import '../../features/sync/screens/sync_notifications_screen.dart';
+import '../../services/sync/sync_providers.dart';
 import 'app_drawer.dart';
 
 class MainShell extends ConsumerStatefulWidget {
@@ -19,10 +21,34 @@ class MainShell extends ConsumerStatefulWidget {
   ConsumerState<MainShell> createState() => _MainShellState();
 }
 
-class _MainShellState extends ConsumerState<MainShell> {
+class _MainShellState extends ConsumerState<MainShell>
+    with WidgetsBindingObserver {
   int _selectedIndex = 0;
   bool _searching = false;
   final _searchController = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Resolve this device's sync id, register it, then start the background
+    // sync scheduler. All best-effort — a failure here must not block the UI.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await ensureDeviceRegistered(ref);
+        ref.read(syncSchedulerProvider).startPeriodicSync();
+        // An opportunistic sync on launch (silent).
+        ref.read(syncSchedulerProvider).onAppResume();
+      } catch (_) {/* sync stays idle until next trigger */}
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      ref.read(syncSchedulerProvider).onAppResume();
+    }
+  }
 
   static const _screens = <Widget>[
     DashboardScreen(),
@@ -45,6 +71,7 @@ class _MainShellState extends ConsumerState<MainShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _searchController.dispose();
     super.dispose();
   }
@@ -107,6 +134,7 @@ class _MainShellState extends ConsumerState<MainShell> {
               )
             : Text(_titleFor(_selectedIndex)),
         actions: [
+          if (_selectedIndex == 0) const _SyncBell(),
           if (_selectedIndex == 0) const _NotificationBell(),
           if (_showSearch)
             IconButton(
@@ -156,6 +184,54 @@ class _MainShellState extends ConsumerState<MainShell> {
             activeIcon: Icon(Icons.people),
             label: AppStrings.navParties,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Sync-activity icon in the dashboard app bar. Badge shows unread sync-log
+/// entries; tapping opens the sync activity screen.
+class _SyncBell extends ConsumerWidget {
+  const _SyncBell();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final count = ref.watch(syncUnreadCountProvider).valueOrNull ?? 0;
+    return IconButton(
+      tooltip: 'Sync activity',
+      onPressed: () => Navigator.push(
+        context,
+        MaterialPageRoute(builder: (_) => const SyncNotificationsScreen()),
+      ),
+      icon: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          const Icon(Icons.sync),
+          if (count > 0)
+            Positioned(
+              right: -3,
+              top: -3,
+              child: Container(
+                padding: const EdgeInsets.all(2),
+                constraints: const BoxConstraints(minWidth: 16, minHeight: 16),
+                decoration: BoxDecoration(
+                  color: AppColors.partial,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.primary, width: 1.5),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  count > 9 ? '9+' : '$count',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 9,
+                    fontWeight: FontWeight.bold,
+                    height: 1,
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
