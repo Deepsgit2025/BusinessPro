@@ -7,6 +7,7 @@ import 'package:intl/intl.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../services/sync/auth_service.dart';
 import '../../../services/sync/drive_service.dart';
+import '../../../services/sync/sync_feedback.dart';
 import '../../../services/sync/sync_models.dart';
 import '../../../services/sync/sync_providers.dart';
 import 'scan_qr_screen.dart';
@@ -102,6 +103,12 @@ class SyncSettingsScreen extends ConsumerWidget {
             ),
             if (linked.valueOrNull == true)
               _StorageTile(),
+
+            if (linked.valueOrNull == true) ...[
+              const Divider(height: 24),
+              _section('Troubleshooting'),
+              _ResetTile(),
+            ],
           ],
         ),
       ),
@@ -308,32 +315,79 @@ class _SyncActionsRowState extends ConsumerState<_SyncActionsRow> {
     if (engine == null) return;
     setState(() => _syncing = true);
     final result = await engine.sync();
+    // Confirm via the app-level messenger so the result shows even if the user
+    // navigated away from this screen while the sync was running.
+    showSyncSnack(result);
     if (!mounted) return;
     setState(() => _syncing = false);
     refreshSyncStateW(ref);
-    _toast(context, _resultMessage(result));
+    invalidateAllSyncedDataW(ref);
   }
 
-  String _resultMessage(SyncResult r) {
-    switch (r.status) {
-      case SyncStatus.noInternet:
-        return 'No internet connection.';
-      case SyncStatus.notLinked:
-        return Platform.isAndroid
-            ? 'Sign in with Google to sync.'
-            : 'Link expired — re-scan the QR from Android.';
-      case SyncStatus.failed:
-        return r.errorMessage == null
-            ? 'Sync failed. Will retry automatically.'
-            : 'Sync failed: ${r.errorMessage}';
-      case SyncStatus.ok:
-        if (!r.didSomething) return 'Already up to date.';
-        final bits = <String>[];
-        if (r.uploaded > 0) bits.add('${r.uploaded} uploaded');
-        if (r.inserted > 0) bits.add('${r.inserted} added');
-        if (r.updated > 0) bits.add('${r.updated} updated');
-        return 'Synced: ${bits.join(', ')}.';
-    }
+}
+
+/// Destructive "fresh start" for this device: wipes local synced data and
+/// re-pulls the paired device's snapshot. For recovering a device whose numbers
+/// drifted (e.g. pre-fix double-counted stock).
+class _ResetTile extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_ResetTile> createState() => _ResetTileState();
+}
+
+class _ResetTileState extends ConsumerState<_ResetTile> {
+  bool _busy = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      leading: _busy
+          ? const SizedBox(
+              height: 20,
+              width: 20,
+              child: CircularProgressIndicator(strokeWidth: 2))
+          : const Icon(Icons.restart_alt, color: AppColors.expense),
+      title: const Text('Reset & re-sync this device'),
+      subtitle: const Text(
+          'Erase this device’s data and re-download from the linked device'),
+      onTap: _busy ? null : _confirmAndReset,
+    );
+  }
+
+  Future<void> _confirmAndReset() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Reset & re-sync this device?'),
+        content: const Text(
+            'This erases all bills, items, parties and balances stored on THIS '
+            'device, then re-downloads everything from the linked device.\n\n'
+            'Use this if this device’s numbers look wrong. The other device is '
+            'not affected.'),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: AppColors.expense),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Reset & re-sync')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    setState(() => _busy = true);
+    final result = await resetAndResync(ref);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    final msg = switch (result.status) {
+      SyncStatus.ok => 'Reset complete — re-synced from the linked device.',
+      SyncStatus.noInternet => 'Data cleared, but no internet to re-sync yet.',
+      SyncStatus.notLinked => 'Data cleared, but the device isn’t linked.',
+      SyncStatus.failed =>
+        'Data cleared, but re-sync failed: ${result.errorMessage ?? 'unknown'}',
+    };
+    _toast(context, msg);
   }
 }
 
@@ -342,20 +396,47 @@ class _DeviceTile extends StatelessWidget {
   final WidgetRef ref;
   const _DeviceTile({required this.device, required this.ref});
 
+  /// A device that synced within this window is treated as currently linked &
+  /// active. Each successful sync round-trips through Drive and updates last_seen,
+  /// so recent activity ≈ "online".
+  static const _onlineWindow = Duration(minutes: 3);
+
   @override
   Widget build(BuildContext context) {
-    final isThis =
-        device.deviceId == ref.read(deviceIdProvider);
+    final isThis = device.deviceId == ref.read(deviceIdProvider);
     final icon = device.deviceType == 'android'
         ? Icons.smartphone
         : Icons.laptop_windows;
+
+    final online = device.lastSeen != null &&
+        DateTime.now().difference(device.lastSeen!) <= _onlineWindow;
+
+    final Widget subtitle;
+    if (isThis) {
+      subtitle = const Text('This device');
+    } else if (online) {
+      subtitle = Row(
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+                color: AppColors.income, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 6),
+          const Text('Online · active now',
+              style: TextStyle(color: AppColors.income, fontWeight: FontWeight.w600)),
+        ],
+      );
+    } else {
+      subtitle = Text('Last active: ${_relative(device.lastSeen)}');
+    }
+
     return ListTile(
       leading: Icon(icon, color: AppColors.primary),
       title: Text(device.deviceName ??
           (device.deviceType == 'android' ? 'Android device' : 'Windows PC')),
-      subtitle: Text(isThis
-          ? 'This device'
-          : 'Last seen: ${_relative(device.lastSeen)}'),
+      subtitle: subtitle,
       trailing: isThis
           ? null
           : IconButton(

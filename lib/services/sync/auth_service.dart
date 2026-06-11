@@ -5,6 +5,7 @@ import 'package:google_sign_in/google_sign_in.dart';
 
 import '../../core/constants/app_strings.dart';
 import '../../core/database/database_helper.dart';
+import 'qr_link_service.dart';
 
 /// Google Sign-In wrapper — **Android only**. It produces the Drive OAuth access
 /// token the [DriveService] needs, caches it (plus the account email and expiry)
@@ -90,11 +91,16 @@ class AuthService {
     return _googleSignIn.isSignedIn();
   }
 
+  final QrLinkService _relay = QrLinkService();
+
   /// A currently-valid Drive access token, refreshing via Google if needed
-  /// (Android) or returning the handed-off token while it's unexpired (Windows).
-  /// Null when no valid token is available.
+  /// (Android) or returning the handed-off / relayed token (Windows). Null when
+  /// no valid token is available.
   Future<String?> getAccessToken() async {
     if (_supported) {
+      // ANDROID: refresh via Google, then publish to the Firestore relay so the
+      // paired Windows device can keep syncing past the ~1h handoff-token expiry
+      // without re-linking.
       final account =
           await _googleSignIn.signInSilently() ?? _googleSignIn.currentUser;
       if (account == null) return null;
@@ -102,13 +108,35 @@ class AuthService {
       final token = auth.accessToken;
       if (token != null) {
         await _saveToken(token, account.email);
+        final myId = await DatabaseHelper.getOrCreateDeviceId();
+        await _relay.publishToken(
+          androidDeviceId: myId,
+          accessToken: token,
+          expiry: DateTime.now().add(const Duration(minutes: 55)),
+        );
       }
       return token;
     }
-    // Windows: use the cached handoff token until it expires.
-    if (await isTokenExpired()) return null;
-    final token = await DatabaseHelper.getSettingStr(AppStrings.kDriveAccessToken);
-    return token.isEmpty ? null : token;
+
+    // WINDOWS: prefer the cached handoff token while valid; otherwise pull a
+    // fresh one from the relay (Android keeps it current). Only if that fails too
+    // do we report no token (→ re-link).
+    if (!await isTokenExpired()) {
+      final token =
+          await DatabaseHelper.getSettingStr(AppStrings.kDriveAccessToken);
+      if (token.isNotEmpty) return token;
+    }
+    final pairedId =
+        await DatabaseHelper.getSettingStr(AppStrings.kPairedAndroidDeviceId);
+    final relayed = await _relay.fetchRelayToken(pairedId);
+    if (relayed != null) {
+      await DatabaseHelper.setSetting(
+          AppStrings.kDriveAccessToken, relayed.accessToken);
+      await DatabaseHelper.setSetting(
+          AppStrings.kDriveTokenExpiry, relayed.expiry.toIso8601String());
+      return relayed.accessToken;
+    }
+    return null;
   }
 
   /// The cached Google account email (for the settings screen). Empty if none.

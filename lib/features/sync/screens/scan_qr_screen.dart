@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
@@ -9,9 +8,10 @@ import '../../../services/sync/qr_link_service.dart';
 import '../../../services/sync/sync_models.dart';
 import '../../../services/sync/sync_providers.dart';
 
-/// Windows-side device linking. Scans the QR shown on Android (or accepts the
-/// code typed manually), fetches the Drive token from Firebase, stores it, and
-/// kicks off the first sync.
+/// Windows-side device linking — code only (no camera/QR). The user reads the
+/// 8-char code shown on the Android phone and types it here. On success it fetches
+/// the Drive token from Firebase, stores it (plus the paired Android device id for
+/// the token relay), registers the Android device, and runs the first sync.
 class ScanQrScreen extends ConsumerStatefulWidget {
   const ScanQrScreen({super.key});
 
@@ -21,42 +21,24 @@ class ScanQrScreen extends ConsumerStatefulWidget {
 
 class _ScanQrScreenState extends ConsumerState<ScanQrScreen> {
   final _qr = QrLinkService();
-  final _manualController = TextEditingController();
-  final _scannerController = MobileScannerController();
+  final _codeController = TextEditingController();
   bool _processing = false;
-  bool _handled = false; // guards against repeated scan callbacks
 
   @override
   void dispose() {
-    _manualController.dispose();
-    _scannerController.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
-  Future<void> _onDetect(BarcodeCapture capture) async {
-    if (_handled || _processing) return;
-    final raw = capture.barcodes
-        .map((b) => b.rawValue)
-        .firstWhere((v) => v != null && v.isNotEmpty, orElse: () => null);
-    if (raw == null) return;
-    _handled = true;
-    await _link(raw);
-  }
-
-  Future<void> _linkManual() async {
-    final code = _manualController.text.trim();
+  Future<void> _link() async {
+    final code = _codeController.text.trim();
     if (code.isEmpty) return;
-    await _link(code);
-  }
-
-  Future<void> _link(String code) async {
     setState(() => _processing = true);
     try {
       final result = await _qr.fetchTokenFromCode(code);
       if (!mounted) return;
 
       if (!result.isSuccess) {
-        _handled = false;
         setState(() => _processing = false);
         _toast(result.status == LinkStatus.expired
             ? 'That code has expired. Generate a new one on Android.'
@@ -64,15 +46,16 @@ class _ScanQrScreenState extends ConsumerState<ScanQrScreen> {
         return;
       }
 
-      // Persist the handed-off token (Windows auth uses the cached token). Give
-      // it the same ~55-minute window Android assumes; the user re-links when
-      // it lapses.
+      // Persist the handed-off token + the paired Android device id (the relay
+      // key, so Windows can auto-refresh the token later without re-linking).
       await DatabaseHelper.setSetting(
           AppStrings.kDriveAccessToken, result.accessToken!);
       await DatabaseHelper.setSetting(
         AppStrings.kDriveTokenExpiry,
         DateTime.now().add(const Duration(minutes: 55)).toIso8601String(),
       );
+      await DatabaseHelper.setSetting(
+          AppStrings.kPairedAndroidDeviceId, result.androidDeviceId ?? '');
 
       // Register the Android device locally so it appears in the device list.
       await ref.read(syncRepositoryProvider).upsertDevice(SyncDevice(
@@ -89,6 +72,7 @@ class _ScanQrScreenState extends ConsumerState<ScanQrScreen> {
       if (engine != null) {
         await engine.sync();
         refreshSyncStateW(ref);
+        invalidateAllSyncedDataW(ref);
       }
 
       if (!mounted) return;
@@ -96,7 +80,6 @@ class _ScanQrScreenState extends ConsumerState<ScanQrScreen> {
       Navigator.pop(context);
     } catch (e) {
       if (!mounted) return;
-      _handled = false;
       setState(() => _processing = false);
       _toast('Could not link. Check your connection and try again.');
     }
@@ -108,108 +91,64 @@ class _ScanQrScreenState extends ConsumerState<ScanQrScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Link to Android Device')),
+      appBar: AppBar(title: const Text('Enter Link Code')),
       body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
               'On your Android phone, open BusinessPro → Settings → Sync & '
-              'Devices → Link New Windows Device. Point the camera at the QR '
-              'code that appears.',
+              'Devices → Link New Windows Device. A code will appear — type it '
+              'below to link this PC.',
               style: TextStyle(color: AppColors.textSecondary, height: 1.4),
             ),
+            const SizedBox(height: 28),
+            TextField(
+              controller: _codeController,
+              autofocus: true,
+              textCapitalization: TextCapitalization.characters,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.w700,
+                letterSpacing: 6,
+              ),
+              decoration: InputDecoration(
+                hintText: 'A1B2C3D4',
+                hintStyle: TextStyle(
+                    color: AppColors.textHint, letterSpacing: 6, fontSize: 24),
+                border: const OutlineInputBorder(),
+                contentPadding: const EdgeInsets.symmetric(vertical: 18),
+              ),
+              onSubmitted: (_) => _link(),
+            ),
             const SizedBox(height: 20),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(18),
-              child: SizedBox(
-                height: 280,
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    MobileScanner(
-                      controller: _scannerController,
-                      onDetect: _onDetect,
-                      errorBuilder: (context, error, child) =>
-                          _ScannerError(error: error),
-                    ),
-                    if (_processing)
-                      Container(
-                        color: Colors.black54,
-                        child: const Center(
-                          child: CircularProgressIndicator(color: Colors.white),
-                        ),
-                      ),
-                  ],
-                ),
+            SizedBox(
+              height: 50,
+              child: FilledButton.icon(
+                style:
+                    FilledButton.styleFrom(backgroundColor: AppColors.primary),
+                icon: _processing
+                    ? const SizedBox(
+                        height: 18,
+                        width: 18,
+                        child: CircularProgressIndicator(
+                            strokeWidth: 2, color: Colors.white))
+                    : const Icon(Icons.link),
+                label: Text(_processing ? 'Linking…' : 'Link Device'),
+                onPressed: _processing ? null : _link,
               ),
             ),
-            const SizedBox(height: 24),
-            const Row(
-              children: [
-                Expanded(child: Divider()),
-                Padding(
-                  padding: EdgeInsets.symmetric(horizontal: 12),
-                  child: Text('or enter code manually',
-                      style: TextStyle(color: AppColors.textSecondary)),
-                ),
-                Expanded(child: Divider()),
-              ],
-            ),
             const SizedBox(height: 16),
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _manualController,
-                    textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(
-                      hintText: 'e.g. A1B2C3D4',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                    onSubmitted: (_) => _linkManual(),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                FilledButton(
-                  style:
-                      FilledButton.styleFrom(backgroundColor: AppColors.primary),
-                  onPressed: _processing ? null : _linkManual,
-                  child: const Text('Link'),
-                ),
-              ],
+            const Text(
+              'The code is single-use and expires in a minute. If it doesn’t '
+              'work, generate a fresh one on Android.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: AppColors.textHint, fontSize: 12.5),
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _ScannerError extends StatelessWidget {
-  final MobileScannerException error;
-  const _ScannerError({required this.error});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: Colors.black,
-      alignment: Alignment.center,
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const Icon(Icons.no_photography_outlined,
-              color: Colors.white70, size: 40),
-          const SizedBox(height: 12),
-          const Text(
-            'Camera unavailable.\nUse the manual code entry below.',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: Colors.white70),
-          ),
-        ],
       ),
     );
   }

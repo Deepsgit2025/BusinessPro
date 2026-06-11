@@ -56,6 +56,7 @@ class SyncEngine {
   /// Runs a full two-way sync. Never throws — returns a [SyncResult] whose
   /// [SyncResult.status] reflects offline / not-linked / failed states.
   Future<SyncResult> sync() async {
+    _mergeErrors.clear();
     try {
       if (!await _hasInternet()) return SyncResult.noInternet();
 
@@ -65,47 +66,48 @@ class SyncEngine {
       if (token == null || token.isEmpty) return SyncResult.notLinked();
       _drive.setToken(token);
 
-      final state = await _repo.getSyncState();
-      var since = DateTime.tryParse(
-          (state['last_upload_at'] as String?) ?? '');
-
-      // Self-heal: if we think we've already uploaded (since != null) but our
-      // changes file isn't actually on Drive, a prior "upload" didn't persist.
-      // Reset the high-water mark so every row re-exports this run.
-      if (since != null && !await _drive.fileExists(_myFile)) {
-        since = null;
-        await _repo.updateLastUploadTime(DateTime.fromMillisecondsSinceEpoch(0));
-      }
-
-      // 1 + 2. Gather and upload local changes.
+      // 1 + 2. Export a COMPLETE snapshot of this device's rows and upload it.
+      // The file is idempotent (uuid-keyed, latest-wins on merge), so there's no
+      // delta bookkeeping: we always send everything, the other side merges what
+      // it's missing and ignores what it already has.
       final local = await _repo.getLocalChanges(
         deviceId: _deviceId,
         deviceType: _deviceType,
-        since: since,
       );
-      final uploadStartedAt = DateTime.now();
       if (local.hasRecords) {
         await _uploadChanges(local);
       }
 
-      // 3. Download the other device's changes.
+      // 3. Download the other device's snapshot.
       final remote = await _downloadRemoteChanges();
 
-      // 4. Merge.
+      // 4. Merge it in (insert missing, latest-wins on conflict).
       var result = await _mergeChanges(remote);
 
-      // 5. Mark local rows synced + advance the upload high-water mark. We use
-      // the pre-upload timestamp so any write that landed *during* the upload is
-      // picked up next run rather than skipped.
+      // 5. Mark local rows synced (drives the "Unsynced records" display; the
+      // export itself is unconditional). Record the sync times.
       if (local.hasRecords) {
         await _markAllSynced(local);
-        await _repo.updateLastUploadTime(uploadStartedAt);
+        await _repo.updateLastUploadTime(DateTime.now());
       }
       if (remote != null) {
         await _repo.updateLastDownloadTime(DateTime.now());
       }
       await _repo.updateLastSyncTime(DateTime.now());
-      if (remote != null) await _repo.touchDevice(remote.deviceId);
+      // Register/refresh the paired device from the changeset we just received,
+      // so it appears (and shows as recently-active) in THIS device's list. The
+      // previous touchDevice-only path meant Android never recorded the Windows
+      // device (only Windows recorded Android at link time), so Android's device
+      // list never showed Windows.
+      if (remote != null && remote.deviceId.isNotEmpty) {
+        await _repo.upsertDevice(SyncDevice(
+          deviceId: remote.deviceId,
+          deviceType: remote.deviceType == 'android' ? 'android' : 'windows',
+          deviceName:
+              remote.deviceType == 'android' ? 'Android device' : 'Windows PC',
+          lastSeen: DateTime.now(),
+        ));
+      }
 
       // 6. Log + attach the upload count for the settings line.
       result = SyncResult(
@@ -159,6 +161,15 @@ class SyncEngine {
 
     var inserted = 0, updated = 0, conflicts = 0;
 
+    // Business profile: Android wins. If the remote changeset carries one (only
+    // Android sends it) and we're not Android, overwrite the local profile
+    // wholesale. This runs before the row merge so a freshly-applied profile is
+    // in place immediately.
+    if (remote.businessProfile != null && _deviceType != 'android') {
+      final changed = await _repo.applyBusinessProfile(remote.businessProfile!);
+      if (changed) updated++;
+    }
+
     // Parents first, then children, then everything else.
     const order = [
       'expense_categories',
@@ -172,22 +183,54 @@ class SyncEngine {
       'payments',
     ];
 
+    // A child may arrive before its parent within the same changeset (e.g. a
+    // transaction_item whose transaction is later in iteration, or skipped this
+    // pass). Loop until no further progress is made so deferred children settle.
+    var pending = <(String, SyncRecord)>[];
     for (final table in order) {
       final records = remote.byTable[table];
       if (records == null || records.isEmpty) continue;
       for (final record in records) {
-        final action = await _mergeRecord(table, record);
+        pending.add((table, record));
+      }
+    }
+
+    var madeProgress = true;
+    while (pending.isNotEmpty && madeProgress) {
+      madeProgress = false;
+      final stillPending = <(String, SyncRecord)>[];
+      for (final (table, record) in pending) {
+        MergeAction action;
+        try {
+          action = await _mergeRecord(table, record);
+        } catch (e) {
+          // A single bad row must not abort the whole merge — but DON'T silently
+          // drop it: record the error and stop retrying this row (it would just
+          // throw again every pass). Surfaced in the sync log below.
+          _mergeErrors.add('$table: $e');
+          continue; // not re-added to stillPending → won't loop forever
+        }
         switch (action) {
           case MergeAction.inserted:
             inserted++;
+            madeProgress = true;
           case MergeAction.updated:
             updated++;
+            madeProgress = true;
           case MergeAction.conflict:
             conflicts++;
+            madeProgress = true;
           case MergeAction.skipped:
-            break;
+            stillPending.add((table, record)); // deferred child — retry next pass
         }
       }
+      pending = stillPending;
+    }
+
+    // Any rows still pending after no-progress are unresolved deferrals (e.g. a
+    // child whose parent never arrived). Note them so they're visible.
+    for (final (table, _) in pending) {
+      _mergeErrors.add('$table: parent not found (deferred)');
     }
 
     return SyncResult(
@@ -197,6 +240,10 @@ class SyncEngine {
       deviceSource: remote.deviceType,
     );
   }
+
+  /// Collected per-record merge problems for the current run, surfaced to the
+  /// sync log so failures are visible instead of silently swallowed.
+  final List<String> _mergeErrors = [];
 
   /// Merges one remote record into [table]: insert if new, overwrite if the
   /// remote copy is strictly newer, otherwise keep local (a conflict the local
@@ -209,18 +256,34 @@ class SyncEngine {
     final local = await _repo.findByUuid(table, remote.uuid);
 
     if (local == null) {
-      await _repo.insertFromSync(table, remote.data);
+      await _repo.insertFromSync(table, remote.data, remote.updatedAt);
       return MergeAction.inserted;
     }
 
-    final localUpdatedAt = _localUpdatedAt(local);
-    if (remote.updatedAt.isAfter(localUpdatedAt)) {
-      await _repo.updateFromSync(table, remote.uuid, remote.data);
+    if (_remoteWins(remote, local)) {
+      await _repo.updateFromSync(
+          table, remote.uuid, remote.data, remote.updatedAt);
       return MergeAction.updated;
     }
 
-    // Local copy is newer or equal → keep it (it re-uploads next run).
+    // Local copy is newer (or wins the tiebreak) → keep it; it re-uploads next
+    // run so the other device converges onto it.
     return MergeAction.conflict;
+  }
+
+  /// Latest-wins with a deterministic tiebreak. Millisecond-precise `isAfter`
+  /// (the old `.inSeconds > 0` coarsening made same-second edits tie and never
+  /// converge). When the two timestamps are exactly equal, the higher `device_id`
+  /// string wins — a total order that's identical on both devices, so they pick
+  /// the SAME winner and converge instead of each keeping its own value.
+  bool _remoteWins(SyncRecord remote, Map<String, dynamic> local) {
+    final localUpdatedAt = _localUpdatedAt(local);
+    if (remote.updatedAt.isAfter(localUpdatedAt)) return true;
+    if (localUpdatedAt.isAfter(remote.updatedAt)) return false;
+    // Exact tie → compare device ids (stable on both sides).
+    final remoteDev = remote.deviceId ?? '';
+    final localDev = (local['device_id'] as String?) ?? '';
+    return remoteDev.compareTo(localDev) > 0;
   }
 
   /// The local row's effective updated-at for conflict comparison, mirroring the
@@ -250,6 +313,18 @@ class SyncEngine {
         recordsCount: result.inserted + result.updated,
         deviceSource: result.deviceSource,
         description: _describe(result),
+        syncedAt: DateTime.now(),
+      ));
+    }
+    // Surface any per-record merge problems (previously swallowed silently).
+    if (_mergeErrors.isNotEmpty) {
+      final sample = _mergeErrors.take(3).join('; ');
+      await _repo.insertSyncLog(SyncLog(
+        syncType: 'merge',
+        recordsCount: _mergeErrors.length,
+        deviceSource: result.deviceSource,
+        description:
+            '${_mergeErrors.length} record(s) could not be merged: $sample',
         syncedAt: DateTime.now(),
       ));
     }

@@ -42,7 +42,6 @@ class _ItemLineWidgetState extends State<ItemLineWidget> {
   late final TextEditingController _qty;
   late final TextEditingController _price;
   late final TextEditingController _disc;
-  bool _expanded = false;
 
   @override
   void initState() {
@@ -133,31 +132,9 @@ class _ItemLineWidgetState extends State<ItemLineWidget> {
             'Tax : ${_fmt(d.taxRate)}%',
             Formatters.currency(computed.taxAmount),
           ),
-          // Expand / collapse the inline editors.
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(_expanded ? 'Hide' : 'Edit',
-                      style: const TextStyle(
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13)),
-                  Icon(
-                    _expanded
-                        ? Icons.keyboard_arrow_up
-                        : Icons.keyboard_arrow_down,
-                    size: 18,
-                    color: AppColors.primary,
-                  ),
-                ],
-              ),
-            ),
-          ),
-          if (_expanded) _editors(d),
+          // Editable inputs are always shown (no Edit/Hide toggle) so qty / price
+          // / discount / tax can be typed the moment an item is added.
+          _editors(d),
         ],
       ),
     );

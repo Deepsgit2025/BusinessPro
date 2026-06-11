@@ -67,4 +67,7 @@ class AppStrings {
   // Google Sign-In; on Windows they arrive via the QR handoff.
   static const kDriveAccessToken = 'drive_access_token';
   static const kDriveTokenExpiry = 'drive_token_expiry';
+  // The paired Android device id (stored on Windows at link time) — used to read
+  // the Firestore token-relay doc so Windows can refresh without re-linking.
+  static const kPairedAndroidDeviceId = 'paired_android_device_id';
 }

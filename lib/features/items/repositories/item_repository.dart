@@ -91,8 +91,11 @@ class ItemRepository {
     return id;
   }
 
-  /// Updates an item. current_stock is deliberately left untouched (driven by
-  /// transactions). Logs any sale/purchase/mrp price changes to history.
+  /// Updates an item. current_stock is transaction-driven, so it isn't written
+  /// from the form — EXCEPT that a change to opening_stock must shift current
+  /// stock by the same delta (otherwise editing opening stock leaves the live
+  /// stock wrong, e.g. set to 0 at create then corrected later but current_stock
+  /// stays 0). Logs any sale/purchase/mrp price changes to history.
   /// See [insert] for [tiers] semantics.
   Future<void> update(Item item, {List<ItemUnit>? tiers}) async {
     final db = await DatabaseHelper.database;
@@ -100,9 +103,20 @@ class ItemRepository {
 
     final existing = await getById(item.id!);
     final effective = _withMirroredBase(item, tiers);
+
+    final data = {...effective.toMap(), 'updated_at': now};
+    // Apply the opening-stock delta to current_stock so the two stay consistent
+    // while preserving stock movements from transactions.
+    if (existing != null) {
+      final delta = effective.openingStock - existing.openingStock;
+      if (delta != 0) {
+        data['current_stock'] = existing.currentStock + delta;
+      }
+    }
+
     await db.update(
       'items',
-      {...effective.toMap(), 'updated_at': now},
+      data,
       where: 'id = ?',
       whereArgs: [item.id],
     );

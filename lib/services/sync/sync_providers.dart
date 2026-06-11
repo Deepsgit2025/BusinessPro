@@ -4,9 +4,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/constants/app_strings.dart';
 import '../../core/database/database_helper.dart';
+import '../../features/cash_bank/providers/account_providers.dart';
+import '../../features/items/providers/item_providers.dart' as items;
+import '../../features/parties/providers/party_providers.dart';
+import '../../features/transactions/providers/transaction_providers.dart';
 import 'auth_service.dart';
 import 'drive_service.dart';
 import 'sync_engine.dart';
+import 'sync_feedback.dart';
 import 'sync_models.dart';
 import 'sync_notification_service.dart';
 import 'sync_repository.dart';
@@ -79,9 +84,7 @@ final lastSyncAtProvider = FutureProvider<DateTime?>((ref) async {
 /// Count of local rows not yet uploaded.
 final unsyncedCountProvider = FutureProvider<int>((ref) async {
   ref.watch(syncStateRefreshProvider);
-  final state = await DatabaseHelper.syncState();
-  final since = DateTime.tryParse((state['last_upload_at'] as String?) ?? '');
-  return ref.read(syncRepositoryProvider).unsyncedCount(since);
+  return ref.read(syncRepositoryProvider).unsyncedCount();
 });
 
 /// Devices linked to this account (for the settings list).
@@ -116,11 +119,45 @@ final syncSchedulerProvider = Provider<SyncScheduler>((ref) {
       if (engine == null) return SyncResult.notLinked();
       return engine.sync();
     },
-    onChanged: (_) => refreshSyncState(ref),
+    onChanged: (result) {
+      refreshSyncState(ref);
+      invalidateAllSyncedData(ref);
+      // Background syncs confirm only when they actually changed something, so
+      // periodic/resume ticks don't nag with "Already up to date".
+      showSyncSnack(result, silentWhenNoChange: true);
+    },
   );
   ref.onDispose(scheduler.dispose);
   return scheduler;
 });
+
+/// Invalidates every business-data list provider so the UI re-queries fresh rows
+/// after a sync merged new data. Without this the item/party/transaction CARDS
+/// show stale values (the detail screens use `.family` providers that re-query
+/// on open, which is why they looked correct while the lists didn't).
+/// Wrapped per-invalidate so an unrelated provider error can't break sync.
+void invalidateAllSyncedData(Ref ref) {
+  void inv(ProviderOrFamily p) {
+    try {
+      ref.invalidate(p);
+    } catch (_) {/* provider not active — ignore */}
+  }
+
+  // Items + their master data.
+  inv(items.itemListProvider);
+  inv(items.categoriesProvider);
+  inv(items.unitsProvider);
+  inv(items.taxRatesProvider);
+  // Parties.
+  inv(partyListProvider);
+  // Cash & bank.
+  inv(accountListProvider);
+  inv(totalBalanceProvider);
+  // Transactions (sale/purchase/expense/income/recent/summaries/accounts).
+  try {
+    invalidateTransactionData(ref);
+  } catch (_) {/* ignore */}
+}
 
 // ── Startup + actions ────────────────────────────────────────────────────────
 
@@ -149,6 +186,25 @@ void refreshSyncState(Ref ref) {
   ref.read(syncStateRefreshProvider.notifier).state++;
 }
 
+/// `WidgetRef` variant of [invalidateAllSyncedData] for screen call sites
+/// (manual Sync Now, reset). Mirrors the [Ref] version.
+void invalidateAllSyncedDataW(WidgetRef ref) {
+  void inv(ProviderOrFamily p) {
+    try {
+      ref.invalidate(p);
+    } catch (_) {}
+  }
+
+  inv(items.itemListProvider);
+  inv(items.categoriesProvider);
+  inv(items.unitsProvider);
+  inv(items.taxRatesProvider);
+  inv(partyListProvider);
+  inv(accountListProvider);
+  inv(totalBalanceProvider);
+  ref.refreshTransactions(); // WidgetRef extension in transaction_providers
+}
+
 /// Convenience for `WidgetRef` callers (screens).
 void refreshSyncStateW(WidgetRef ref) {
   ref.read(syncStateRefreshProvider.notifier).state++;
@@ -162,4 +218,21 @@ Future<void> disconnectSync(WidgetRef ref) async {
   ref.read(driveServiceProvider).clear();
   await DatabaseHelper.setSetting(AppStrings.kDriveAccessToken, '');
   refreshSyncStateW(ref);
+}
+
+/// Wipes this device's synced data and re-pulls the paired device's full
+/// snapshot. Returns the [SyncResult] of the re-sync so the caller can report
+/// it. The device stays linked (token + devices rows preserved).
+Future<SyncResult> resetAndResync(WidgetRef ref) async {
+  await ref.read(syncRepositoryProvider).resetLocalData();
+  // Invalidate everything that reads business data so the UI reflects the wipe
+  // immediately, even before the re-sync repopulates it.
+  refreshSyncStateW(ref);
+  invalidateAllSyncedDataW(ref);
+  final engine = ref.read(syncEngineProvider);
+  if (engine == null) return SyncResult.notLinked();
+  final result = await engine.sync();
+  refreshSyncStateW(ref);
+  invalidateAllSyncedDataW(ref);
+  return result;
 }

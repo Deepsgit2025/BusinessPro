@@ -66,7 +66,13 @@ steps for a working sync:
    rules_version = '2';
    service cloud.firestore {
      match /databases/{database}/documents {
+       // One-time QR/code link handoff (short-lived, single-use).
        match /link_tokens/{tokenId} {
+         allow read, write: if true;
+       }
+       // Token relay: Android keeps a fresh Drive token here so Windows can
+       // refresh without re-linking. Still just an OAuth token, no business data.
+       match /device_tokens/{deviceId} {
          allow read, write: if true;
        }
        match /{document=**} {

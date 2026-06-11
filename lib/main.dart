@@ -18,6 +18,7 @@ import 'features/items/screens/items_list_screen.dart';
 import 'features/reports/screens/reports_home_screen.dart';
 import 'features/settings/screens/settings_screen.dart';
 import 'features/sync/screens/sync_settings_screen.dart';
+import 'services/sync/sync_feedback.dart';
 import 'shared/widgets/main_shell.dart';
 
 Future<void> main() async {
@@ -50,6 +51,9 @@ class BusinessProApp extends ConsumerWidget {
     return MaterialApp(
       title: AppStrings.appName,
       debugShowCheckedModeBanner: false,
+      // Global messenger so a completed sync can confirm itself with a bottom
+      // snackbar on any screen (see sync_feedback.dart).
+      scaffoldMessengerKey: rootMessengerKey,
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
       themeMode: themeMode,

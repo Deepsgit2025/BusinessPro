@@ -151,11 +151,6 @@ class DriveService {
 
   // ── HELPERS ──────────────────────────────────────────────────────────────
 
-  /// Whether `fileName` exists in the sync folder. Used by the engine to detect
-  /// a prior upload that didn't actually persist.
-  Future<bool> fileExists(String fileName) async =>
-      (await _findFile(fileName)) != null;
-
   /// The Drive file id of `fileName` inside the sync folder, or null.
   Future<String?> _findFile(String fileName) async {
     final folderId = await getOrCreateFolder();

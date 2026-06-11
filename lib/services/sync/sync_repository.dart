@@ -57,6 +57,10 @@ class SyncRepository {
       'party_id': 'parties',
       'account_id': 'accounts',
       'category_id': 'expense_categories',
+      // Self-reference: a sale links to the order/challan it converted from.
+      // Must be remapped by uuid or it carries the source device's local id and
+      // FK-fails (787). Nullable, so an unresolved link just drops to null.
+      'linked_transaction_id': 'transactions',
     },
     'transaction_items': {
       'transaction_id': 'transactions',
@@ -69,24 +73,58 @@ class SyncRepository {
     },
   };
 
+  /// Foreign keys into NON-synced master tables (`units`, `tax_rates`,
+  /// `payment_modes`) that are seeded identically on every device but whose
+  /// integer ids may differ. These can't be remapped by uuid (the master rows
+  /// have none). Instead the export attaches the parent's NATURAL KEY (e.g. a
+  /// unit's short_name, a tax rate's rate) as `_<col>_nk`, and the merge resolves
+  /// it to the LOCAL row with that key.
+  ///   table → { localColumn: (refTable, naturalKeyColumn) }
+  /// This is why a synced item previously vanished: its unit_id pointed at a
+  /// row id that didn't match on the other device and the insert FK-failed.
+  static const _naturalKeyFks = <String, Map<String, (String, String)>>{
+    'items': {
+      'unit_id': ('units', 'short_name'),
+      'tax_rate_id': ('tax_rates', 'rate'),
+    },
+    'item_units': {
+      'unit_id': ('units', 'short_name'),
+    },
+    'transaction_items': {
+      'tax_rate_id': ('tax_rates', 'rate'),
+    },
+  };
+
   // ── LOCAL CHANGE EXTRACTION ────────────────────────────────────────────────
 
-  /// Builds the [ChangeSet] of everything changed locally since [since]
-  /// (sync_state.last_upload_at). When [since] is null (first ever sync) every
-  /// row is included.
+  /// Builds the [ChangeSet] — a COMPLETE snapshot of this device's synced rows.
+  /// The changes file is idempotent (uuid-keyed, latest-wins on merge), so we
+  /// always export everything rather than an incremental delta; this guarantees
+  /// no row is ever dropped from the channel.
   Future<ChangeSet> getLocalChanges({
     required String deviceId,
     required String deviceType,
-    DateTime? since,
   }) async {
     final db = await DatabaseHelper.database;
     final byTable = <String, List<SyncRecord>>{};
 
     for (final table in DatabaseHelper.syncedTables) {
-      byTable[table] = await _unsyncedRows(db, table, since);
+      byTable[table] = await _allRows(db, table);
+    }
+
+    // Business profile: Android is the source of truth, so only Android exports
+    // it (always the full current row). Windows exports null so it never
+    // clobbers Android.
+    Map<String, dynamic>? profile;
+    if (deviceType == 'android') {
+      final biz = await DatabaseHelper.getBusiness();
+      if (biz != null) {
+        profile = Map<String, dynamic>.from(biz)..remove('id');
+      }
     }
 
     return ChangeSet(
+      businessProfile: profile,
       deviceId: deviceId,
       deviceType: deviceType,
       businessId: _businessId,
@@ -95,8 +133,7 @@ class SyncRepository {
     );
   }
 
-  Future<List<SyncRecord>> _unsyncedRows(
-      Database db, String table, DateTime? since) async {
+  Future<List<SyncRecord>> _allRows(Database db, String table) async {
     // transaction_items has no timestamp of its own — track its parent's so an
     // edited bill re-uploads its lines. Other tables use their own column.
     final isTxnItems = table == 'transaction_items';
@@ -115,18 +152,30 @@ class SyncRepository {
       joins.add('LEFT JOIN $refTable $alias ON $alias.id = t.$col');
       i++;
     });
+
+    // Natural-key helpers for FKs into seeded master tables (units/tax_rates).
+    final nkFks = _naturalKeyFks[table] ?? const {};
+    nkFks.forEach((col, ref) {
+      final (refTable, nkCol) = ref;
+      final alias = 'nk$i';
+      selects.add('$alias.$nkCol AS _${col}_nk');
+      joins.add('LEFT JOIN $refTable $alias ON $alias.id = t.$col');
+      i++;
+    });
     if (isTxnItems) {
       // Dedicated parent join for the timestamp (separate from the FK join so
       // the expression is stable even if transaction_id isn't in _foreignKeys).
       joins.add('LEFT JOIN transactions parent ON parent.id = t.transaction_id');
     }
 
+    // The changes file is a COMPLETE, idempotent snapshot of this device's rows,
+    // not an incremental delta. Earlier designs exported only is_synced=0 rows,
+    // but the file is overwritten each upload — so a row uploaded once then
+    // marked synced would disappear from the file before the other device read
+    // it, silently dropping data. Exporting everything (uuid-keyed, latest-wins
+    // on merge) makes re-seeing a row harmless and guarantees no delta is missed.
     final where = StringBuffer('t.uuid IS NOT NULL');
     final args = <Object?>[];
-    if (since != null) {
-      where.write(' AND $expr > ?');
-      args.add(since.toIso8601String());
-    }
 
     final rows = await db.rawQuery(
       'SELECT ${selects.join(', ')} FROM $table t '
@@ -160,6 +209,49 @@ class SyncRepository {
 
   // ── MERGE: FIND / INSERT / UPDATE BY UUID ──────────────────────────────────
 
+  /// Overwrites the local business profile (businesses row id=1) with [profile]
+  /// from Android (Android takes precedence). Returns true only if something
+  /// actually changed — the caller uses this so an unchanged profile doesn't get
+  /// reported as "1 updated" on every sync.
+  Future<bool> applyBusinessProfile(Map<String, dynamic> profile) async {
+    final db = await DatabaseHelper.database;
+
+    // Never copy these: id is fixed; the *_counter columns are per-device
+    // numbering state (copying them would corrupt Windows' own invoice/receipt
+    // sequence); created_at/updated_at are local bookkeeping.
+    const skip = {
+      'id',
+      'invoice_counter',
+      'purchase_counter',
+      'receipt_counter',
+      'created_at',
+      'updated_at',
+    };
+
+    // Only write columns that actually exist on this device's businesses table,
+    // so a schema drift between devices can't make the whole update throw.
+    final cols = await db.rawQuery('PRAGMA table_info(businesses)');
+    final existing = cols.map((c) => c['name'] as String).toSet();
+
+    final incoming = <String, dynamic>{};
+    profile.forEach((k, v) {
+      if (!skip.contains(k) && existing.contains(k)) incoming[k] = v;
+    });
+    if (incoming.isEmpty) return false;
+
+    // Change detection: compare against the current row; only write the columns
+    // that differ. No diff ⇒ nothing to do (and not counted as an update).
+    final current = await DatabaseHelper.getBusiness() ?? const {};
+    final changed = <String, dynamic>{};
+    incoming.forEach((k, v) {
+      if (current[k] != v) changed[k] = v;
+    });
+    if (changed.isEmpty) return false;
+
+    await db.update('businesses', changed, where: 'id = 1');
+    return true;
+  }
+
   /// The local row for [uuid] in [table], or null if absent.
   Future<Map<String, dynamic>?> findByUuid(String table, String uuid) async {
     final db = await DatabaseHelper.database;
@@ -172,24 +264,50 @@ class SyncRepository {
   /// reference other tables by integer id are remapped from the accompanying
   /// uuid where one is provided (see [_remapForeignKeys]); rows whose parents
   /// haven't arrived yet are skipped by the caller via [canResolveParents].
-  Future<void> insertFromSync(String table, Map<String, dynamic> data) async {
+  ///
+  /// [effectiveUpdatedAt] is the record's authoritative change time from the
+  /// changeset. We stamp it onto the local row's `updated_at` (when that column
+  /// exists) so the next merge's timestamp comparison matches and the row isn't
+  /// re-"updated" on every sync. This is essential for child rows like
+  /// transaction_items whose own `updated_at` is null in the payload.
+  Future<void> insertFromSync(
+      String table, Map<String, dynamic> data, DateTime effectiveUpdatedAt) async {
     final row = await _remapForeignKeys(table, Map<String, dynamic>.from(data));
     row.remove('id');
-    // Mark as already-synced so we don't bounce it straight back out.
     row['is_synced'] = 1;
+    _stampUpdatedAt(table, row, effectiveUpdatedAt);
     final db = await DatabaseHelper.database;
     await db.insert(table, row,
         conflictAlgorithm: ConflictAlgorithm.replace);
   }
 
   /// Overwrites the local row identified by [uuid] with newer remote data.
-  Future<void> updateFromSync(
-      String table, String uuid, Map<String, dynamic> data) async {
+  Future<void> updateFromSync(String table, String uuid,
+      Map<String, dynamic> data, DateTime effectiveUpdatedAt) async {
     final row = await _remapForeignKeys(table, Map<String, dynamic>.from(data));
     row..remove('id')..remove('uuid');
     row['is_synced'] = 1;
+    _stampUpdatedAt(table, row, effectiveUpdatedAt);
     final db = await DatabaseHelper.database;
     await db.update(table, row, where: 'uuid = ?', whereArgs: [uuid]);
+  }
+
+  /// Tables that carry an `updated_at` column the merge compares against. We
+  /// overwrite it with the changeset's authoritative time (stored canonically as
+  /// ISO-8601) so subsequent comparisons are stable and format-independent.
+  static const _hasUpdatedAt = {
+    'transactions',
+    'parties',
+    'items',
+    'accounts',
+    'transaction_items',
+  };
+
+  void _stampUpdatedAt(
+      String table, Map<String, dynamic> row, DateTime when) {
+    if (_hasUpdatedAt.contains(table)) {
+      row['updated_at'] = when.toIso8601String();
+    }
   }
 
   /// True when the *structural* parent referenced by [data] already exists
@@ -210,6 +328,9 @@ class SyncRepository {
   static const _owningFk = <String, (String, String)>{
     'transaction_items': ('transaction_id', 'transactions'),
     'item_units': ('item_id', 'items'),
+    // payments.transaction_id is NOT NULL → a payment must wait for its parent
+    // transaction to merge first, else it fails the NOT NULL constraint (1299).
+    'payments': ('transaction_id', 'transactions'),
   };
 
   /// Rewrites every uuid-carried foreign key in [data] back into the local
@@ -232,17 +353,58 @@ class SyncRepository {
         data[col] = parent?['id'];
       }
     }
-    // Drop any stray helper fields (e.g. for FKs not in the map) so they can't
-    // leak into the column list.
-    data.removeWhere((k, _) => k.startsWith('_') && k.endsWith('_uuid'));
+
+    // Resolve natural-key FKs (units / tax_rates) to LOCAL ids by matching the
+    // seeded master row with the same short_name / rate.
+    final nkFks = _naturalKeyFks[table] ?? const {};
+    for (final entry in nkFks.entries) {
+      final col = entry.key;
+      final (refTable, nkCol) = entry.value;
+      final helper = '_${col}_nk';
+      if (!data.containsKey(helper)) continue;
+      final nkValue = data.remove(helper);
+      data[col] = nkValue == null
+          ? null
+          : await _localIdByNaturalKey(refTable, nkCol, nkValue);
+    }
+
+    // Last-resort fallback for the one hard NOT NULL master FK: item_units.unit_id
+    // must reference a real unit or the insert fails. If unresolved, use the
+    // parent item's base unit, else the first local unit.
+    if (table == 'item_units' && data['unit_id'] == null) {
+      data['unit_id'] = await _fallbackUnitId();
+    }
+
+    // Drop any stray helper fields so they can't leak into the column list.
+    data.removeWhere((k, _) =>
+        k.startsWith('_') && (k.endsWith('_uuid') || k.endsWith('_nk')));
     return data;
+  }
+
+  /// The local id of the master row in [refTable] whose [nkCol] equals [value],
+  /// or null if none matches.
+  Future<int?> _localIdByNaturalKey(
+      String refTable, String nkCol, Object value) async {
+    final db = await DatabaseHelper.database;
+    final rows = await db.query(refTable,
+        columns: ['id'], where: '$nkCol = ?', whereArgs: [value], limit: 1);
+    return rows.isEmpty ? null : rows.first['id'] as int?;
+  }
+
+  /// A safe unit id when an item_unit's unit can't be resolved (the row must
+  /// have a non-null unit_id). Prefers any active unit, else any unit.
+  Future<int?> _fallbackUnitId() async {
+    final db = await DatabaseHelper.database;
+    final rows = await db.query('units',
+        columns: ['id'], orderBy: 'id', limit: 1);
+    return rows.isEmpty ? null : rows.first['id'] as int?;
   }
 
   // ── MARK SYNCED ────────────────────────────────────────────────────────────
 
-  /// Flags the given uuids in [table] as synced. (Change detection is timestamp
-  /// based, so this is bookkeeping rather than load-bearing, but it keeps the
-  /// "Unsynced records" count in settings honest right after an upload.)
+  /// Flags the given uuids in [table] as synced. This is now load-bearing:
+  /// change detection filters on `is_synced = 0`, so a row only leaves the
+  /// upload set once this runs after a successful upload.
   Future<void> markSynced(String table, List<String> uuids) async {
     if (uuids.isEmpty) return;
     final db = await DatabaseHelper.database;
@@ -259,20 +421,16 @@ class SyncRepository {
 
   /// Count of locally-unsynced rows across all tracked tables (for the settings
   /// "Unsynced records" line). Counts rows changed since the last upload.
-  Future<int> unsyncedCount(DateTime? since) async {
+  /// Count of locally-changed rows not yet confirmed uploaded (is_synced = 0).
+  /// Drives the "Unsynced records" line; the export sends everything regardless.
+  Future<int> unsyncedCount() async {
     final db = await DatabaseHelper.database;
     var total = 0;
     for (final table in DatabaseHelper.syncedTables) {
       if (table == 'transaction_items') continue;
-      final expr = _updatedAtExpr[table] ?? "'1970-01-01'";
-      final where = StringBuffer('t.uuid IS NOT NULL');
-      final args = <Object?>[];
-      if (since != null) {
-        where.write(' AND $expr > ?');
-        args.add(since.toIso8601String());
-      }
       final rows = await db.rawQuery(
-        'SELECT COUNT(*) AS c FROM $table t WHERE $where', args);
+        'SELECT COUNT(*) AS c FROM $table t '
+        "WHERE t.uuid IS NOT NULL AND COALESCE(t.is_synced, 0) = 0");
       total += (rows.first['c'] as int?) ?? 0;
     }
     return total;
@@ -361,4 +519,41 @@ class SyncRepository {
 
   Future<void> updateLastSyncTime(DateTime when) =>
       DatabaseHelper.updateSyncState({'last_sync_at': when.toIso8601String()});
+
+  // ── RESET (fresh start on this device) ─────────────────────────────────────
+
+  /// Wipes all synced business data on THIS device so a subsequent sync re-pulls
+  /// the paired device's complete snapshot. Used to recover a device whose
+  /// numbers drifted (e.g. pre-fix double-counted stock). The `businesses` row is
+  /// kept (it's overwritten by the Android profile on the next sync) and the
+  /// devices/sync_state link is preserved so the device stays paired.
+  ///
+  /// Deletes children before parents to respect foreign keys, and clears the
+  /// sync-state high-water marks + activity log.
+  Future<void> resetLocalData() async {
+    final db = await DatabaseHelper.database;
+    await db.transaction((txn) async {
+      // Order matters: children/dependents first.
+      const deleteOrder = [
+        'payments',
+        'transaction_items',
+        'transactions',
+        'item_units',
+        'items',
+        'parties',
+        'expense_categories',
+        'item_categories',
+        'accounts',
+      ];
+      for (final table in deleteOrder) {
+        await txn.delete(table);
+      }
+      await txn.delete('sync_log');
+      await txn.update('sync_state', {
+        'last_sync_at': null,
+        'last_upload_at': null,
+        'last_download_at': null,
+      });
+    });
+  }
 }

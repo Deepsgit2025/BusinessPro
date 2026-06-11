@@ -67,9 +67,6 @@ dependencies:
   google_sign_in: ^6.2.1
   # HTTP client for the Drive v3 REST calls (works on Android + Windows).
   http: ^1.2.2
-  # QR generator (Android shows the link code) + scanner (Windows reads it).
-  qr_flutter: ^4.1.0
-  mobile_scanner: ^5.2.3
   # Detect internet availability before attempting a sync.
   connectivity_plus: ^6.1.0
 

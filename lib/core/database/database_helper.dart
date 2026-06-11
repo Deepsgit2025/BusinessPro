@@ -5,7 +5,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class DatabaseHelper {
   static const _dbName = 'business_pro.db';
-  static const _dbVersion = 8;
+  static const _dbVersion = 10;
 
   static Database? _db;
 
@@ -281,6 +281,36 @@ class DatabaseHelper {
       await _createSyncTriggers(db);
       await _backfillSyncUuids(db);
     }
+
+    // v8 → v9: change detection switched from a timestamp high-water mark (which
+    // skewed across the UTC/local timestamp formats in this DB and silently
+    // skipped rows) to the is_synced flag. These AFTER UPDATE triggers reset
+    // is_synced = 0 whenever the app edits a synced row, so edits re-upload.
+    // Existing rows are left as-is (already-synced ones stay synced).
+    if (oldVersion < 9) {
+      await _createSyncUpdateTriggers(db);
+    }
+
+    // v9 → v10: guard the stock + payment effect-triggers so they DON'T fire on
+    // sync-merged rows (which already carry their effects). Without this, every
+    // synced bill double-applied stock and account balance and corrupted payment
+    // status. Drop and recreate all seven with the new is_synced guard.
+    if (oldVersion < 10) {
+      const guardedTriggers = [
+        'trg_stock_decrease_on_sale',
+        'trg_stock_increase_on_sale_return',
+        'trg_stock_increase_on_purchase',
+        'trg_stock_decrease_on_purchase_return',
+        'trg_account_balance_increase',
+        'trg_account_balance_decrease',
+        'trg_update_transaction_payment_status',
+      ];
+      for (final t in guardedTriggers) {
+        await db.execute('DROP TRIGGER IF EXISTS $t');
+      }
+      await _createStockTriggers(db);
+      await _createPaymentTriggers(db);
+    }
   }
 
   static Future<void> _onConfigure(Database db) async {
@@ -317,6 +347,7 @@ class DatabaseHelper {
     await _createSyncColumns(db);
     await _createSyncTables(db);
     await _createSyncTriggers(db);
+    await _createSyncUpdateTriggers(db);
     await _backfillSyncUuids(db);
   }
 
@@ -856,6 +887,33 @@ class DatabaseHelper {
     }
   }
 
+  /// AFTER UPDATE triggers that mark a synced row dirty (is_synced = 0) when the
+  /// app edits it, so the edit re-uploads on the next sync.
+  ///
+  /// The guard distinguishes an app edit from a sync-merge write:
+  ///   - App edits don't touch is_synced, so NEW.is_synced = OLD.is_synced. When
+  ///     the row was previously synced (OLD.is_synced = 1) we flip it to 0.
+  ///   - The merge (updateFromSync) sets is_synced = 1 explicitly, so
+  ///     NEW.is_synced (1) <> OLD.is_synced (often 0) → guard fails → no flip,
+  ///     preventing a cross-device bounce loop.
+  /// After the trigger sets is_synced = 0, any recursive fire sees
+  /// NEW.is_synced = OLD.is_synced = 0 → guard's "= 1" fails → stops. (Recursive
+  /// triggers are off by default regardless.)
+  static Future<void> _createSyncUpdateTriggers(Database db) async {
+    for (final t in syncedTables) {
+      final cols = await db.rawQuery('PRAGMA table_info($t)');
+      if (!cols.any((c) => c['name'] == 'is_synced')) continue;
+      await db.execute('''
+        CREATE TRIGGER IF NOT EXISTS trg_sync_dirty_$t
+        AFTER UPDATE ON $t
+        WHEN NEW.is_synced = OLD.is_synced AND OLD.is_synced = 1
+        BEGIN
+          UPDATE $t SET is_synced = 0 WHERE id = NEW.id;
+        END
+      ''');
+    }
+  }
+
   /// One-time backfill: give every pre-existing row a uuid. Runs after the
   /// triggers exist, but operates on rows inserted before them (seed data on a
   /// fresh DB, or the user's real data on upgrade). Uses the same generation
@@ -906,12 +964,25 @@ class DatabaseHelper {
 
   static Future<void> _createTriggers(Database db) async {
     await _createStockTriggers(db);
+    await _createPaymentTriggers(db);
+  }
 
+  /// The three payment-side triggers (account balance ± and transaction
+  /// payment-status derivation). Extracted so the v10 migration can drop and
+  /// recreate them with the sync guard.
+  ///
+  /// Each guards on `COALESCE(NEW.is_synced, 0) = 0` so it fires only for
+  /// locally-created payments. A sync-merged payment already carries the source
+  /// device's account-balance effect and the transaction's pre-derived
+  /// paid_amount/balance_amount/payment_status; without the guard these triggers
+  /// would double-count the balance and corrupt the payment status on every sync.
+  static Future<void> _createPaymentTriggers(Database db) async {
     // Account balance increases on payment_in or sale (cash payment)
     await db.execute('''
       CREATE TRIGGER trg_account_balance_increase
       AFTER INSERT ON payments
       WHEN NEW.account_id IS NOT NULL
+        AND COALESCE(NEW.is_synced, 0) = 0
         AND (SELECT transaction_type FROM transactions WHERE id = NEW.transaction_id)
             IN ('sale', 'payment_in', 'other_income')
       BEGIN
@@ -927,6 +998,7 @@ class DatabaseHelper {
       CREATE TRIGGER trg_account_balance_decrease
       AFTER INSERT ON payments
       WHEN NEW.account_id IS NOT NULL
+        AND COALESCE(NEW.is_synced, 0) = 0
         AND (SELECT transaction_type FROM transactions WHERE id = NEW.transaction_id)
             IN ('purchase', 'payment_out', 'expense')
       BEGIN
@@ -941,6 +1013,7 @@ class DatabaseHelper {
     await db.execute('''
       CREATE TRIGGER trg_update_transaction_payment_status
       AFTER INSERT ON payments
+      WHEN COALESCE(NEW.is_synced, 0) = 0
       BEGIN
         UPDATE transactions
         SET paid_amount    = paid_amount + NEW.amount,
@@ -958,6 +1031,11 @@ class DatabaseHelper {
 
   /// The four stock-movement triggers. Extracted so the v3 migration can drop
   /// and recreate them with the conversion-factor logic.
+  ///
+  /// Each guards on `COALESCE(NEW.is_synced, 0) = 0` so it fires only for rows
+  /// the user creates *locally*. Sync-merged rows arrive with their stock effect
+  /// already applied on the source device (and is_synced = 1); without this
+  /// guard the trigger would re-apply it here, doubling stock on every sync.
   static Future<void> _createStockTriggers(Database db) async {
     // Stock decreases when a sale line item is inserted
     await db.execute('''
@@ -965,6 +1043,7 @@ class DatabaseHelper {
       AFTER INSERT ON transaction_items
       WHEN (SELECT transaction_type FROM transactions WHERE id = NEW.transaction_id) = 'sale'
         AND NEW.item_id IS NOT NULL
+        AND COALESCE(NEW.is_synced, 0) = 0
       BEGIN
         UPDATE items
         SET current_stock = current_stock - (NEW.quantity * COALESCE(NEW.conversion_factor, 1)),
@@ -979,6 +1058,7 @@ class DatabaseHelper {
       AFTER INSERT ON transaction_items
       WHEN (SELECT transaction_type FROM transactions WHERE id = NEW.transaction_id) = 'sale_return'
         AND NEW.item_id IS NOT NULL
+        AND COALESCE(NEW.is_synced, 0) = 0
       BEGIN
         UPDATE items
         SET current_stock = current_stock + (NEW.quantity * COALESCE(NEW.conversion_factor, 1)),
@@ -993,6 +1073,7 @@ class DatabaseHelper {
       AFTER INSERT ON transaction_items
       WHEN (SELECT transaction_type FROM transactions WHERE id = NEW.transaction_id) = 'purchase'
         AND NEW.item_id IS NOT NULL
+        AND COALESCE(NEW.is_synced, 0) = 0
       BEGIN
         UPDATE items
         SET current_stock = current_stock + (NEW.quantity * COALESCE(NEW.conversion_factor, 1)),
@@ -1007,6 +1088,7 @@ class DatabaseHelper {
       AFTER INSERT ON transaction_items
       WHEN (SELECT transaction_type FROM transactions WHERE id = NEW.transaction_id) = 'purchase_return'
         AND NEW.item_id IS NOT NULL
+        AND COALESCE(NEW.is_synced, 0) = 0
       BEGIN
         UPDATE items
         SET current_stock = current_stock - (NEW.quantity * COALESCE(NEW.conversion_factor, 1)),
@@ -1185,12 +1267,19 @@ class DatabaseHelper {
     );
   }
 
+  /// Per-device document-number prefix. Windows prepends `W-` to every generated
+  /// number (W-INV-0001, W-PUR-0001, W-1, W-CN 1, …) so the two devices can never
+  /// produce the same id — same id for two different bills would corrupt
+  /// reports/ledgers after sync. Android (and any other platform) uses no prefix,
+  /// so its existing numbering is untouched.
+  static String get deviceDocPrefix => Platform.isWindows ? 'W-' : '';
+
   static Future<String> nextInvoiceNumber() async {
     final db = await database;
     final biz = await getBusiness();
     final prefix = biz?['invoice_prefix'] as String? ?? 'INV';
     final counter = (biz?['invoice_counter'] as int?) ?? 1;
-    final number = '$prefix-${counter.toString().padLeft(4, '0')}';
+    final number = '$deviceDocPrefix$prefix-${counter.toString().padLeft(4, '0')}';
     await db.update(
       'businesses',
       {'invoice_counter': counter + 1},
@@ -1204,7 +1293,7 @@ class DatabaseHelper {
     final biz = await getBusiness();
     final prefix = biz?['purchase_prefix'] as String? ?? 'PUR';
     final counter = (biz?['purchase_counter'] as int?) ?? 1;
-    final number = '$prefix-${counter.toString().padLeft(4, '0')}';
+    final number = '$deviceDocPrefix$prefix-${counter.toString().padLeft(4, '0')}';
     await db.update(
       'businesses',
       {'purchase_counter': counter + 1},
@@ -1217,7 +1306,7 @@ class DatabaseHelper {
     final db = await database;
     final biz = await getBusiness();
     final counter = (biz?['receipt_counter'] as int?) ?? 1;
-    final number = counter.toString();
+    final number = '$deviceDocPrefix$counter';
     await db.update(
       'businesses',
       {'receipt_counter': counter + 1},
@@ -1229,7 +1318,7 @@ class DatabaseHelper {
   /// Peek at the next receipt number without consuming the counter.
   static Future<String> peekReceiptNumber() async {
     final biz = await getBusiness();
-    return ((biz?['receipt_counter'] as int?) ?? 1).toString();
+    return '$deviceDocPrefix${(biz?['receipt_counter'] as int?) ?? 1}';
   }
 
   // ─────────────────────────────────────────

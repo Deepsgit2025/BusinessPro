@@ -207,26 +207,31 @@ class _AddEditTransactionScreenState
   }
 
   /// Reads the next number without consuming the counter (consumed on save).
+  /// Windows prepends `W-` (see [DatabaseHelper.deviceDocPrefix]) so the two
+  /// devices never generate colliding ids.
   Future<String> _peekNumber(String kind) async {
     final biz = await DatabaseHelper.getBusiness();
+    final dp = DatabaseHelper.deviceDocPrefix;
     if (kind == 'purchase') {
       final prefix = biz?['purchase_prefix'] as String? ?? 'PUR';
       final c = (biz?['purchase_counter'] as int?) ?? 1;
-      return '$prefix-${c.toString().padLeft(4, '0')}';
+      return '$dp$prefix-${c.toString().padLeft(4, '0')}';
     }
     final prefix = kind == 'estimate'
         ? 'EST'
         : (biz?['invoice_prefix'] as String? ?? 'INV');
     final c = (biz?['invoice_counter'] as int?) ?? 1;
-    return '$prefix-${c.toString().padLeft(4, '0')}';
+    return '$dp$prefix-${c.toString().padLeft(4, '0')}';
   }
 
   /// Next Credit Note number, derived from how many sale returns already exist.
   /// There is no dedicated counter column, so we count + 1 and label it "CN N".
+  /// The `W-` prefix on Windows also keeps these from colliding with Android's
+  /// (count-derived numbers would otherwise clash once both devices' returns sync).
   Future<String> _peekReturnNumber() async {
     final repo = ref.read(transactionRepositoryProvider);
     final count = await repo.countByType(TxnTypes.saleReturn);
-    return 'CN ${count + 1}';
+    return '${DatabaseHelper.deviceDocPrefix}CN ${count + 1}';
   }
 
   /// Next Purchase Return (Debit Note) number ("PR-1"). Derived from the count
@@ -234,7 +239,7 @@ class _AddEditTransactionScreenState
   Future<String> _peekPurchaseReturnNumber() async {
     final repo = ref.read(transactionRepositoryProvider);
     final count = await repo.countByType(TxnTypes.purchaseReturn);
-    return 'PR-${count + 1}';
+    return '${DatabaseHelper.deviceDocPrefix}PR-${count + 1}';
   }
 
   /// Next Purchase Order number ("PO-01"). Derived from the count of existing
@@ -242,7 +247,7 @@ class _AddEditTransactionScreenState
   Future<String> _peekPurchaseOrderNumber() async {
     final repo = ref.read(transactionRepositoryProvider);
     final count = await repo.countByType(TxnTypes.purchaseOrder);
-    return 'PO-${(count + 1).toString().padLeft(2, '0')}';
+    return '${DatabaseHelper.deviceDocPrefix}PO-${(count + 1).toString().padLeft(2, '0')}';
   }
 
   /// Next Delivery Challan number ("DC-0001"). Like estimates, challans have no
@@ -251,7 +256,7 @@ class _AddEditTransactionScreenState
   Future<String> _peekChallanNumber() async {
     final repo = ref.read(transactionRepositoryProvider);
     final count = await repo.countByType(TxnTypes.deliveryChallan);
-    return 'DC-${(count + 1).toString().padLeft(4, '0')}';
+    return '${DatabaseHelper.deviceDocPrefix}DC-${(count + 1).toString().padLeft(4, '0')}';
   }
 
   /// Loads [sourceId] into the form. On edit ([copyNumber] true) this restores

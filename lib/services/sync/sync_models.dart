@@ -54,12 +54,18 @@ class ChangeSet {
   final DateTime exportedAt;
   final Map<String, List<SyncRecord>> byTable;
 
+  /// The business profile (businesses row id=1) as exported by Android, the
+  /// source of truth for it. Android always populates this; Windows always
+  /// applies it verbatim (Android wins). Null when the exporter is Windows.
+  final Map<String, dynamic>? businessProfile;
+
   const ChangeSet({
     required this.deviceId,
     required this.deviceType,
     required this.businessId,
     required this.exportedAt,
     required this.byTable,
+    this.businessProfile,
   });
 
   /// True when at least one table carries a record.
@@ -74,6 +80,7 @@ class ChangeSet {
         'device_type': deviceType,
         'business_id': businessId,
         'exported_at': exportedAt.toIso8601String(),
+        'business_profile': businessProfile,
         'tables': {
           for (final entry in byTable.entries)
             entry.key: entry.value.map((r) => r.toJson()).toList(),
@@ -88,6 +95,9 @@ class ChangeSet {
       businessId: (json['business_id'] as int?) ?? 1,
       exportedAt: DateTime.tryParse(json['exported_at'] as String? ?? '') ??
           DateTime.fromMillisecondsSinceEpoch(0),
+      businessProfile: (json['business_profile'] as Map?) == null
+          ? null
+          : Map<String, dynamic>.from(json['business_profile'] as Map),
       byTable: {
         for (final entry in tables.entries)
           entry.key as String: ((entry.value as List?) ?? const [])

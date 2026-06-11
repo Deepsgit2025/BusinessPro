@@ -247,7 +247,9 @@ class _ActionGrid extends StatelessWidget {
         physics: const NeverScrollableScrollPhysics(),
         gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
           crossAxisCount: 3,
-          mainAxisExtent: 96,
+          // Tall enough for the two-line labels (Estimate/Quotation,
+          // Delivery/Challan) — 96 clipped them by ~10px.
+          mainAxisExtent: 108,
           mainAxisSpacing: 4,
         ),
         itemCount: _items.length,
@@ -282,13 +284,13 @@ class _ActionButton extends StatelessWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              width: 52,
-              height: 52,
+              width: 50,
+              height: 50,
               decoration: BoxDecoration(
                 color: item.color.withValues(alpha: 0.1),
                 shape: BoxShape.circle,

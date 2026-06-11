@@ -1,8 +1,8 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../services/sync/qr_link_service.dart';
@@ -92,23 +92,22 @@ class _ShowQrScreenState extends ConsumerState<ShowQrScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Link Windows Device')),
+      appBar: AppBar(title: const Text('Show Link Code')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             const Text(
-              'On your Windows PC, open BusinessPro and go to '
-              'Settings → Sync & Devices → Link to Android Device, then scan '
-              'this code.',
+              'On your Windows PC, open BusinessPro → Settings → Sync & Devices '
+              '→ Link to Android Device, then type the code below.',
               style: TextStyle(color: AppColors.textSecondary, height: 1.4),
             ),
             const SizedBox(height: 28),
             if (_error != null)
               _ErrorBox(message: _error!, onRetry: _generate)
             else
-              _QrBlock(
+              _CodeBlock(
                 code: _code,
                 generating: _generating,
                 secondsLeft: _secondsLeft,
@@ -133,11 +132,11 @@ class _ShowQrScreenState extends ConsumerState<ShowQrScreen> {
   }
 }
 
-class _QrBlock extends StatelessWidget {
+class _CodeBlock extends StatelessWidget {
   final String? code;
   final bool generating;
   final int secondsLeft;
-  const _QrBlock({
+  const _CodeBlock({
     required this.code,
     required this.generating,
     required this.secondsLeft,
@@ -148,36 +147,50 @@ class _QrBlock extends StatelessWidget {
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.all(20),
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: AppColors.primary.withValues(alpha: 0.06),
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: AppColors.border),
+            border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
           ),
           child: (generating || code == null)
               ? const SizedBox(
-                  height: 220,
-                  width: 220,
-                  child: Center(child: CircularProgressIndicator()),
-                )
-              : QrImageView(
-                  data: code!,
-                  version: QrVersions.auto,
-                  size: 220,
-                  backgroundColor: Colors.white,
+                  height: 64, child: Center(child: CircularProgressIndicator()))
+              : Column(
+                  children: [
+                    const Text('YOUR LINK CODE',
+                        style: TextStyle(
+                            fontSize: 12,
+                            letterSpacing: 1.5,
+                            color: AppColors.textSecondary,
+                            fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 10),
+                    SelectableText(
+                      code!,
+                      style: const TextStyle(
+                        fontSize: 40,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 6,
+                        color: AppColors.primary,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton.icon(
+                      icon: const Icon(Icons.copy, size: 16),
+                      label: const Text('Copy code'),
+                      onPressed: () {
+                        Clipboard.setData(ClipboardData(text: code!));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Code copied')),
+                        );
+                      },
+                    ),
+                  ],
                 ),
         ),
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
         if (code != null) ...[
-          Text(
-            'Code: ${code!}',
-            style: const TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 2,
-            ),
-          ),
-          const SizedBox(height: 8),
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [

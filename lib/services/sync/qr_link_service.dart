@@ -10,9 +10,51 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 /// [fetchTokenFromCode], reads the doc, deletes it, and keeps the token locally.
 class QrLinkService {
   static const _collection = 'link_tokens';
+  /// Firestore collection holding the latest Drive token per Android device, so
+  /// Windows can refresh transparently after its handed-off token expires
+  /// (instead of forcing a re-link). Still no business data — just the OAuth
+  /// access token + expiry, overwritten by Android on each sync.
+  static const _relayCollection = 'device_tokens';
   static const tokenTtlSeconds = 60;
 
   FirebaseFirestore get _db => FirebaseFirestore.instance;
+
+  /// ANDROID: publishes the current fresh Drive [accessToken] (+ [expiry]) to the
+  /// relay doc keyed by Android's [androidDeviceId]. Called on every Android sync
+  /// so the doc stays fresh. Best-effort — a failure here never breaks the sync.
+  Future<void> publishToken({
+    required String androidDeviceId,
+    required String accessToken,
+    required DateTime expiry,
+  }) async {
+    if (androidDeviceId.isEmpty || accessToken.isEmpty) return;
+    try {
+      await _db.collection(_relayCollection).doc(androidDeviceId).set({
+        'access_token': accessToken,
+        'expires_at': expiry.toIso8601String(),
+        'updated_at': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {/* ignore — sync continues with the in-memory token */}
+  }
+
+  /// WINDOWS: fetches the latest relayed token for [androidDeviceId], or null if
+  /// none/expired. Lets Windows refresh without re-linking.
+  Future<RelayToken?> fetchRelayToken(String androidDeviceId) async {
+    if (androidDeviceId.isEmpty) return null;
+    try {
+      final doc =
+          await _db.collection(_relayCollection).doc(androidDeviceId).get();
+      if (!doc.exists) return null;
+      final data = doc.data()!;
+      final token = data['access_token'] as String?;
+      final expiry = DateTime.tryParse(data['expires_at'] as String? ?? '');
+      if (token == null || token.isEmpty || expiry == null) return null;
+      if (DateTime.now().isAfter(expiry)) return null; // relayed token also stale
+      return RelayToken(token, expiry);
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// Deposits [accessToken] + [deviceId] under a fresh short code and returns the
   /// code (the QR payload). The doc self-expires: Windows deletes it on read, and
@@ -121,3 +163,10 @@ class LinkResult {
 }
 
 enum LinkStatus { success, expired, notFound }
+
+/// A token pulled from the Firestore relay (Windows token auto-refresh).
+class RelayToken {
+  final String accessToken;
+  final DateTime expiry;
+  const RelayToken(this.accessToken, this.expiry);
+}
