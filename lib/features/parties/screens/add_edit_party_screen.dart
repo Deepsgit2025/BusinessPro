@@ -223,8 +223,9 @@ class _AddEditPartyScreenState extends ConsumerState<AddEditPartyScreen> {
               }
               return null;
             }),
-            _field(_pan, 'PAN Number',
-                textCapitalization: TextCapitalization.characters),
+            // PAN Number field hidden from the UI (Invoice Format 1). The
+            // column and any existing value are preserved: _pan keeps the
+            // loaded value and is still written back on save.
 
             const SizedBox(height: 8),
             _label('Credit & Opening Balance'),

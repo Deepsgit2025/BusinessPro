@@ -29,6 +29,15 @@ dependencies:
   pdf: ^3.11.3
   printing: ^5.14.2
 
+  # Thermal printing (ESC/POS)
+  # Bluetooth — Android only; never imported on the Windows code path.
+  flutter_blue_plus: ^1.32.12
+  # NOTE: USB thermal support is temporarily disabled. The only published
+  # usb_serial (0.5.2) ships an outdated Gradle config (AGP 4.1.0, jcenter) that
+  # fails to configure under this project's modern AGP, breaking the Android
+  # release build. UsbPrinterService is stubbed as "unavailable" until a
+  # maintained USB-serial plugin is wired in. Bluetooth + Network thermal work.
+
   # Sharing
   share_plus: ^13.1.0
 
@@ -56,6 +65,9 @@ dependencies:
 
   # Light key-value settings
   shared_preferences: ^2.3.5
+
+  # SHA-256 hashing for the optional PIN lock (Phase 6 Layer 1)
+  crypto: ^3.0.3
 
   # Firebase
   firebase_core: ^3.15.1

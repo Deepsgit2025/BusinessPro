@@ -52,6 +52,21 @@ class Transaction {
   final int? linkedTransactionId;
   final bool isDeleted;
 
+  // Invoice Format 1: transport / delivery details (sale invoices). All optional.
+  final String? ewayBillNumber;
+  final String? placeOfSupply;
+  final String? transportName;
+  final String? vehicleNumber;
+  final String? deliveryDate; // ISO 8601
+  final String? deliveryLocation;
+
+  // Shipping address (used when it differs from the party's billing address).
+  final String? shippingAddress;
+  final String? shippingCity;
+  final String? shippingState;
+  final String? shippingPincode;
+  final bool isShippingDiff;
+
   // Joined view data (not persisted on the transactions row).
   final String? partyName;
   final String? categoryName;
@@ -87,6 +102,17 @@ class Transaction {
     this.termsConditions,
     this.linkedTransactionId,
     this.isDeleted = false,
+    this.ewayBillNumber,
+    this.placeOfSupply,
+    this.transportName,
+    this.vehicleNumber,
+    this.deliveryDate,
+    this.deliveryLocation,
+    this.shippingAddress,
+    this.shippingCity,
+    this.shippingState,
+    this.shippingPincode,
+    this.isShippingDiff = false,
     this.partyName,
     this.categoryName,
     this.accountName,
@@ -128,6 +154,17 @@ class Transaction {
         termsConditions: m['terms_conditions'] as String?,
         linkedTransactionId: m['linked_transaction_id'] as int?,
         isDeleted: ((m['is_deleted'] as int?) ?? 0) == 1,
+        ewayBillNumber: m['eway_bill_number'] as String?,
+        placeOfSupply: m['place_of_supply'] as String?,
+        transportName: m['transport_name'] as String?,
+        vehicleNumber: m['vehicle_number'] as String?,
+        deliveryDate: m['delivery_date'] as String?,
+        deliveryLocation: m['delivery_location'] as String?,
+        shippingAddress: m['shipping_address'] as String?,
+        shippingCity: m['shipping_city'] as String?,
+        shippingState: m['shipping_state'] as String?,
+        shippingPincode: m['shipping_pincode'] as String?,
+        isShippingDiff: ((m['is_shipping_diff'] as int?) ?? 0) == 1,
         partyName: m['party_name'] as String?,
         categoryName: m['category_name'] as String?,
         accountName: m['account_name'] as String?,
@@ -166,5 +203,16 @@ class Transaction {
         'terms_conditions': termsConditions,
         'linked_transaction_id': linkedTransactionId,
         'is_deleted': isDeleted ? 1 : 0,
+        'eway_bill_number': ewayBillNumber,
+        'place_of_supply': placeOfSupply,
+        'transport_name': transportName,
+        'vehicle_number': vehicleNumber,
+        'delivery_date': deliveryDate,
+        'delivery_location': deliveryLocation,
+        'shipping_address': shippingAddress,
+        'shipping_city': shippingCity,
+        'shipping_state': shippingState,
+        'shipping_pincode': shippingPincode,
+        'is_shipping_diff': isShippingDiff ? 1 : 0,
       };
 }

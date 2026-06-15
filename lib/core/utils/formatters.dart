@@ -37,4 +37,18 @@ class Formatters {
     final dt = DateTime.tryParse(raw);
     return dt == null ? raw : DateFormat('dd MMM yyyy').format(dt);
   }
+
+  /// Relative day label: "Today", "Yesterday", "N days ago", else "dd MMM".
+  /// Used by the inventory list's last-activity line.
+  static String relativeDay(DateTime? dt) {
+    if (dt == null) return 'No activity';
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(dt.year, dt.month, dt.day);
+    final days = today.difference(that).inDays;
+    if (days <= 0) return 'Today';
+    if (days == 1) return 'Yesterday';
+    if (days < 7) return '$days days ago';
+    return DateFormat('dd MMM').format(dt);
+  }
 }

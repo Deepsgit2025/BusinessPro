@@ -9,6 +9,7 @@ import '../models/transaction.dart';
 import '../models/transaction_item.dart';
 import '../repositories/transaction_repository.dart';
 import '../repositories/txn_meta_repository.dart';
+import '../../inventory/providers/inventory_providers.dart' as inventory;
 import '../../../services/sync/sync_providers.dart';
 
 // ── Repositories ────────────────────────────────────────────────────────────
@@ -242,6 +243,20 @@ final incomeListProvider = FutureProvider<List<Transaction>>((ref) async {
   return repo.list(const [TxnTypes.otherIncome]);
 });
 
+// ── Dashboard outstanding totals ─────────────────────────────────────────────
+
+/// Money owed *to* the business (Σ unpaid sale balances). Drives the dashboard
+/// "To Collect" card. Refreshed via [invalidateTransactionData] on every write.
+final outstandingReceivablesProvider = FutureProvider<double>((ref) async {
+  return ref.watch(transactionRepositoryProvider).getOutstandingReceivables();
+});
+
+/// Money the business owes *out* (Σ unpaid purchase balances). Drives the
+/// dashboard "To Pay" card.
+final outstandingPayablesProvider = FutureProvider<double>((ref) async {
+  return ref.watch(transactionRepositoryProvider).getOutstandingPayables();
+});
+
 // ── Detail ──────────────────────────────────────────────────────────────────
 
 /// Bundles a transaction with its lines and payments for the detail screen.
@@ -327,7 +342,15 @@ void invalidateTransactionData(Ref ref) {
   ref.invalidate(expenseListProvider);
   ref.invalidate(incomeListProvider);
   ref.invalidate(recentTransactionsProvider);
+  ref.invalidate(outstandingReceivablesProvider);
+  ref.invalidate(outstandingPayablesProvider);
   ref.invalidate(accountsProvider);
+  // Inventory views derive their stock/journey from transactions. Invalidate
+  // the list and the per-item (.family) journey/header so an open inventory
+  // screen reflects the write immediately.
+  ref.invalidate(inventory.inventoryListProvider);
+  ref.invalidate(inventory.inventoryJourneyProvider);
+  ref.invalidate(inventory.inventoryHeaderProvider);
   // Phase 5: nudge a (debounced, silent) sync after any transaction write.
   try {
     ref.read(syncSchedulerProvider).onTransactionSaved();
@@ -351,7 +374,13 @@ extension TransactionDataRefresh on WidgetRef {
     invalidate(expenseListProvider);
     invalidate(incomeListProvider);
     invalidate(recentTransactionsProvider);
+    invalidate(outstandingReceivablesProvider);
+    invalidate(outstandingPayablesProvider);
     invalidate(accountsProvider);
+    // Inventory views (list + per-item journey/header) derive from transactions.
+    invalidate(inventory.inventoryListProvider);
+    invalidate(inventory.inventoryJourneyProvider);
+    invalidate(inventory.inventoryHeaderProvider);
     // Phase 5: trigger a debounced silent sync after the write.
     try {
       read(syncSchedulerProvider).onTransactionSaved();

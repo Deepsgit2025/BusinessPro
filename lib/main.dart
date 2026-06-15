@@ -14,12 +14,15 @@ import 'features/expense/screens/expense_list_screen.dart';
 import 'features/income/screens/income_list_screen.dart';
 import 'features/employees/screens/employees_list_screen.dart';
 import 'features/backup/screens/backup_screen.dart';
+import 'features/inventory/screens/inventory_list_screen.dart';
 import 'features/items/screens/items_list_screen.dart';
 import 'features/reports/screens/reports_home_screen.dart';
 import 'features/settings/screens/settings_screen.dart';
 import 'features/sync/screens/sync_settings_screen.dart';
+import 'services/security/app_lock_service.dart';
 import 'services/sync/sync_feedback.dart';
 import 'shared/widgets/main_shell.dart';
+import 'widgets/security/app_lock_wrapper.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -33,6 +36,13 @@ Future<void> main() async {
 
   // Initialize DB — creates all tables + seeds data on first run
   await DatabaseHelper.database;
+
+  // Phase 6 Layer 1: load the optional PIN-lock state before the first frame so
+  // a protected app comes up already locked.
+  final pinEnabled =
+      await DatabaseHelper.getSettingStr('security_pin_enabled') == '1';
+  final pinHash = await DatabaseHelper.getSettingStr('security_pin_hash');
+  AppLockService.instance.init(pinEnabled: pinEnabled, pinHash: pinHash);
 
   runApp(const ProviderScope(child: BusinessProApp()));
 }
@@ -59,9 +69,10 @@ class BusinessProApp extends ConsumerWidget {
       themeMode: themeMode,
       initialRoute: '/',
       routes: {
-        '/': (_) => const MainShell(),
+        '/': (_) => const AppLockWrapper(child: MainShell()),
         '/company-setup': (_) => const CompanySetupScreen(),
         '/items': (_) => const ItemsListScreen(),
+        '/inventory': (_) => const InventoryListScreen(),
         '/expense': (_) => const ExpenseListScreen(),
         '/income': (_) => const IncomeListScreen(),
         '/cash-bank': (_) => const AccountsListScreen(),

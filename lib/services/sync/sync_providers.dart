@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/app_strings.dart';
 import '../../core/database/database_helper.dart';
 import '../../features/cash_bank/providers/account_providers.dart';
+import '../../features/inventory/providers/inventory_providers.dart' as inventory;
 import '../../features/items/providers/item_providers.dart' as items;
 import '../../features/parties/providers/party_providers.dart';
 import '../../features/transactions/providers/transaction_providers.dart';
@@ -148,6 +149,9 @@ void invalidateAllSyncedData(Ref ref) {
   inv(items.categoriesProvider);
   inv(items.unitsProvider);
   inv(items.taxRatesProvider);
+  // Inventory list (read view over items/transactions). The journey/header are
+  // `.family` providers that re-query on open, so they need no invalidation.
+  inv(inventory.inventoryListProvider);
   // Parties.
   inv(partyListProvider);
   // Cash & bank.
@@ -199,6 +203,7 @@ void invalidateAllSyncedDataW(WidgetRef ref) {
   inv(items.categoriesProvider);
   inv(items.unitsProvider);
   inv(items.taxRatesProvider);
+  inv(inventory.inventoryListProvider);
   inv(partyListProvider);
   inv(accountListProvider);
   inv(totalBalanceProvider);

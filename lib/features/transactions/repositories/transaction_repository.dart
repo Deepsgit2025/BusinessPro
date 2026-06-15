@@ -105,6 +105,37 @@ class TransactionRepository {
   }
 
   // ─────────────────────────────────────────
+  // DASHBOARD OUTSTANDING TOTALS
+  // ─────────────────────────────────────────
+
+  /// Total still owed *to* the business: Σ(total − paid) over active, non-deleted
+  /// sales that still carry a balance. Returns 0 when there's nothing outstanding.
+  Future<double> getOutstandingReceivables() =>
+      _outstandingForType(model.TxnTypes.sale);
+
+  /// Total the business still owes *out*: Σ(total − paid) over active, non-deleted
+  /// purchases that still carry a balance. Returns 0 when nothing is outstanding.
+  Future<double> getOutstandingPayables() =>
+      _outstandingForType(model.TxnTypes.purchase);
+
+  /// Σ(total_amount − paid_amount) for one [type], counting only rows with a
+  /// remaining balance. Cancelled and soft-deleted rows are excluded. A null SUM
+  /// (no matching rows) collapses to 0 so the dashboard can show ₹0.
+  Future<double> _outstandingForType(String type) async {
+    final db = await DatabaseHelper.database;
+    final rows = await db.rawQuery('''
+      SELECT COALESCE(SUM(total_amount - paid_amount), 0) AS outstanding
+      FROM transactions
+      WHERE business_id = ?
+        AND transaction_type = ?
+        AND is_deleted = 0
+        AND status != 'cancelled'
+        AND balance_amount > 0
+    ''', [_businessId, type]);
+    return (rows.first['outstanding'] as num?)?.toDouble() ?? 0;
+  }
+
+  // ─────────────────────────────────────────
   // DETAIL
   // ─────────────────────────────────────────
 
@@ -155,13 +186,14 @@ class TransactionRepository {
   /// then derives paid_amount / balance_amount / payment_status and moves the
   /// account balance. For credit (unpaid) saves, pass null.
   ///
-  /// [counterField] ('invoice_counter' / 'purchase_counter') is incremented when
-  /// supplied so numbering stays sequential.
+  /// [counterType] ('sale' / 'purchase') advances that type's per-prefix
+  /// counter when supplied, so numbering stays sequential. Estimates / challans
+  /// / returns / orders derive their numbers from a count and pass null.
   Future<int> create(
     model.Transaction txn,
     List<TransactionItem> items, {
     Payment? initialPayment,
-    String? counterField,
+    String? counterType,
   }) async {
     final db = await DatabaseHelper.database;
     final now = DateTime.now().toIso8601String();
@@ -193,13 +225,15 @@ class TransactionRepository {
         });
       }
 
-      if (counterField != null) {
-        await sql.rawUpdate(
-          'UPDATE businesses SET $counterField = $counterField + 1 WHERE id = ?',
-          [_businessId],
-        );
+      return id;
+    }).then((id) async {
+      // Advance the per-prefix counter (counter_<type>_<PREFIX>) AFTER the
+      // insert transaction commits — consumeDocNumber writes through the shared
+      // connection, so doing it inside the open transaction could deadlock. The
+      // txn already carries the peeked number, so this only moves the sequence.
+      if (counterType != null) {
+        await DatabaseHelper.consumeDocNumber(counterType);
       }
-
       return id;
     });
   }
@@ -352,11 +386,10 @@ class TransactionRepository {
         where: 'id = ?',
         whereArgs: [estimateId],
       );
-      // Increment invoice counter for the new sale.
-      await sql.rawUpdate(
-        'UPDATE businesses SET invoice_counter = invoice_counter + 1 WHERE id = ?',
-        [_businessId],
-      );
+      return saleId;
+    }).then((saleId) async {
+      // Advance the sale per-prefix counter after commit (see create()).
+      await DatabaseHelper.consumeDocNumber('sale');
       return saleId;
     });
   }
@@ -399,10 +432,10 @@ class TransactionRepository {
         where: 'id = ?',
         whereArgs: [challanId],
       );
-      await sql.rawUpdate(
-        'UPDATE businesses SET invoice_counter = invoice_counter + 1 WHERE id = ?',
-        [_businessId],
-      );
+      return saleId;
+    }).then((saleId) async {
+      // Advance the sale per-prefix counter after commit (see create()).
+      await DatabaseHelper.consumeDocNumber('sale');
       return saleId;
     });
   }

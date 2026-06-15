@@ -2,11 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
+import '../../../core/database/database_helper.dart';
 import '../../../core/providers/settings_provider.dart';
 import '../../../core/providers/theme_provider.dart';
+import '../../../screens/security/security_settings_screen.dart';
+import '../../../services/security/app_lock_service.dart';
 import '../../items/screens/tax_rates_screen.dart';
 import '../../items/screens/units_screen.dart';
+import 'bill_formats_screen.dart';
 import 'notification_settings_screen.dart';
+import 'prefix_settings_screen.dart';
+import 'printer_settings_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -62,6 +68,29 @@ class SettingsScreen extends ConsumerWidget {
               title: const Text('Show Discount Field'),
               secondary: const Icon(Icons.discount_outlined, color: AppColors.primary),
               activeThumbColor: AppColors.primary,
+            ),
+            ListTile(
+              leading: const Icon(Icons.description_outlined,
+                  color: AppColors.primary),
+              title: const Text('Bill Formats'),
+              subtitle:
+                  const Text('Invoice & estimate print layouts, preview'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const BillFormatsScreen()),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.tag, color: AppColors.primary),
+              title: const Text('Invoice Prefix'),
+              subtitle:
+                  const Text('Sale & purchase numbering — custom or monthly'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PrefixSettingsScreen()),
+              ),
             ),
             const Divider(height: 0),
 
@@ -135,6 +164,20 @@ class SettingsScreen extends ConsumerWidget {
             ),
             const Divider(height: 0),
 
+            _SectionTile('Printing'),
+            ListTile(
+              leading: const Icon(Icons.print_outlined, color: AppColors.primary),
+              title: const Text('Printer Settings'),
+              subtitle: const Text('Thermal printer, paper size, default printer'),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                    builder: (_) => const PrinterSettingsScreen()),
+              ),
+            ),
+            const Divider(height: 0),
+
             _SectionTile('Sync'),
             ListTile(
               leading: const Icon(Icons.sync, color: AppColors.primary),
@@ -142,6 +185,33 @@ class SettingsScreen extends ConsumerWidget {
               subtitle: const Text('Google Drive sync, linked devices'),
               trailing: const Icon(Icons.chevron_right),
               onTap: () => Navigator.pushNamed(context, '/sync'),
+            ),
+            const Divider(height: 0),
+
+            _SectionTile('Security'),
+            ListTile(
+              leading: const Icon(Icons.security_outlined, color: AppColors.primary),
+              title: const Text('Security'),
+              subtitle: ListenableBuilder(
+                listenable: AppLockService.instance,
+                builder: (context, _) => Text(AppLockService.instance.pinEnabled
+                    ? 'PIN lock is on'
+                    : 'PIN lock is off'),
+              ),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(
+                  builder: (_) => SecuritySettingsScreen(
+                    onChanged: (enabled, hash) async {
+                      await DatabaseHelper.setSetting(
+                          'security_pin_enabled', enabled ? '1' : '0');
+                      await DatabaseHelper.setSetting(
+                          'security_pin_hash', hash ?? '');
+                    },
+                  ),
+                ),
+              ),
             ),
             const Divider(height: 0),
 

@@ -2,16 +2,50 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/providers/business_provider.dart';
+import '../../../core/utils/formatters.dart';
 import '../../items/screens/add_edit_item_screen.dart';
 import '../../transactions/providers/transaction_providers.dart';
 import '../../transactions/screens/sale_list_screen.dart';
 import '../../transactions/widgets/transaction_card.dart';
 
-class DashboardScreen extends ConsumerWidget {
+class DashboardScreen extends ConsumerStatefulWidget {
   const DashboardScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<DashboardScreen> createState() => _DashboardScreenState();
+}
+
+class _DashboardScreenState extends ConsumerState<DashboardScreen>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Refresh the outstanding totals on first mount (a peer device may have
+    // synced new transactions in while the dashboard wasn't the active tab).
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshOutstanding());
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-pull the To Collect / To Pay figures whenever the app comes back to
+    // the foreground — sync may have changed balances while backgrounded.
+    if (state == AppLifecycleState.resumed) _refreshOutstanding();
+  }
+
+  void _refreshOutstanding() {
+    ref.invalidate(outstandingReceivablesProvider);
+    ref.invalidate(outstandingPayablesProvider);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final bizAsync = ref.watch(businessProvider);
 
     return bizAsync.when(
@@ -31,15 +65,23 @@ class DashboardScreen extends ConsumerWidget {
   }
 }
 
-class _SummaryRow extends StatelessWidget {
+class _SummaryRow extends ConsumerWidget {
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final receivables = ref.watch(outstandingReceivablesProvider);
+    final payables = ref.watch(outstandingPayablesProvider);
+
+    // Null/loading/error all fall back to ₹0 so the cards never show a spinner
+    // or blank in place of a number.
+    String money(AsyncValue<double> v) =>
+        Formatters.currency(v.valueOrNull ?? 0);
+
     return Row(
       children: [
         Expanded(
           child: _SummaryCard(
             label: 'To Collect',
-            amount: '₹0.00',
+            amount: money(receivables),
             icon: Icons.south_west_rounded,
             gradient: AppColors.incomeGradient,
           ),
@@ -48,7 +90,7 @@ class _SummaryRow extends StatelessWidget {
         Expanded(
           child: _SummaryCard(
             label: 'To Pay',
-            amount: '₹0.00',
+            amount: money(payables),
             icon: Icons.north_east_rounded,
             gradient: AppColors.expenseGradient,
           ),

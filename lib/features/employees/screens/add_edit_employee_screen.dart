@@ -23,6 +23,8 @@ class _AddEditEmployeeScreenState extends ConsumerState<AddEditEmployeeScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _name;
   late final TextEditingController _pay;
+  late final TextEditingController _overtime;
+  late final TextEditingController _openingAdvance;
   late final TextEditingController _role;
   late final TextEditingController _phone;
   bool _saving = false;
@@ -34,6 +36,11 @@ class _AddEditEmployeeScreenState extends ConsumerState<AddEditEmployeeScreen> {
     _name = TextEditingController(text: e?.name ?? '');
     _pay = TextEditingController(
         text: e == null ? '' : Formatters.plain(e.dailyPay));
+    _overtime = TextEditingController(
+        text: e == null || e.overtimeRate == 0
+            ? ''
+            : Formatters.plain(e.overtimeRate));
+    _openingAdvance = TextEditingController();
     _role = TextEditingController(text: e?.role ?? '');
     _phone = TextEditingController(text: e?.phone ?? '');
   }
@@ -42,6 +49,8 @@ class _AddEditEmployeeScreenState extends ConsumerState<AddEditEmployeeScreen> {
   void dispose() {
     _name.dispose();
     _pay.dispose();
+    _overtime.dispose();
+    _openingAdvance.dispose();
     _role.dispose();
     _phone.dispose();
     super.dispose();
@@ -57,6 +66,7 @@ class _AddEditEmployeeScreenState extends ConsumerState<AddEditEmployeeScreen> {
       id: base?.id,
       name: _name.text.trim(),
       dailyPay: double.tryParse(_pay.text.trim()) ?? 0,
+      overtimeRate: double.tryParse(_overtime.text.trim()) ?? 0,
       role: _role.text.trim().isEmpty ? null : _role.text.trim(),
       phone: _phone.text.trim().isEmpty ? null : _phone.text.trim(),
       joinDate: base?.joinDate ?? DateTime.now().toIso8601String(),
@@ -66,7 +76,8 @@ class _AddEditEmployeeScreenState extends ConsumerState<AddEditEmployeeScreen> {
     if (widget.isEditing) {
       await repo.update(employee);
     } else {
-      await repo.insert(employee);
+      final opening = double.tryParse(_openingAdvance.text.trim()) ?? 0;
+      await repo.insert(employee, openingAdvance: opening);
     }
 
     ref.invalidate(employeeListProvider);
@@ -118,6 +129,20 @@ class _AddEditEmployeeScreenState extends ConsumerState<AddEditEmployeeScreen> {
             ),
             const SizedBox(height: 16),
             TextFormField(
+              controller: _overtime,
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+              ],
+              decoration: const InputDecoration(
+                labelText: 'Overtime rate per hour (optional)',
+                prefixText: '₹ ',
+                prefixIcon: Icon(Icons.more_time_outlined),
+              ),
+            ),
+            const SizedBox(height: 16),
+            TextFormField(
               controller: _role,
               textCapitalization: TextCapitalization.words,
               decoration: const InputDecoration(
@@ -135,6 +160,24 @@ class _AddEditEmployeeScreenState extends ConsumerState<AddEditEmployeeScreen> {
                 prefixIcon: Icon(Icons.phone_outlined),
               ),
             ),
+            // Opening advance only on add — editing uses "Give Advance".
+            if (!widget.isEditing) ...[
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _openingAdvance,
+                keyboardType:
+                    const TextInputType.numberWithOptions(decimal: true),
+                inputFormatters: [
+                  FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+                ],
+                decoration: const InputDecoration(
+                  labelText: 'Opening advance outstanding (optional)',
+                  prefixText: '₹ ',
+                  prefixIcon: Icon(Icons.account_balance_wallet_outlined),
+                  helperText: 'Advance already owed before tracking starts',
+                ),
+              ),
+            ],
             const SizedBox(height: 28),
             SizedBox(
               height: 50,

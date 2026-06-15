@@ -35,6 +35,7 @@ class Attendance {
   final String date; // ISO-8601 date (yyyy-MM-dd)
   final AttendanceStatus status;
   final double dayValue;
+  final double overtimeHours; // overtime worked on this day (rides on the row)
   final String? note;
 
   const Attendance({
@@ -43,8 +44,12 @@ class Attendance {
     required this.date,
     required this.status,
     required this.dayValue,
+    this.overtimeHours = 0,
     this.note,
   });
+
+  /// True when the day carries logged overtime, regardless of present/half.
+  bool get hasOvertime => overtimeHours > 0;
 
   factory Attendance.fromMap(Map<String, dynamic> m) => Attendance(
         id: m['id'] as int?,
@@ -52,6 +57,7 @@ class Attendance {
         date: m['date'] as String,
         status: AttendanceStatus.fromDb(m['status'] as String?),
         dayValue: (m['day_value'] as num?)?.toDouble() ?? 0,
+        overtimeHours: (m['overtime_hours'] as num?)?.toDouble() ?? 0,
         note: m['note'] as String?,
       );
 
@@ -61,6 +67,7 @@ class Attendance {
         'date': date,
         'status': status.db,
         'day_value': dayValue,
+        'overtime_hours': overtimeHours,
         'note': note,
       };
 }

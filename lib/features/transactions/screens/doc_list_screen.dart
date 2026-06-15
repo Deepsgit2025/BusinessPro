@@ -212,12 +212,8 @@ class DocListScreen extends ConsumerWidget {
     ref.refreshTransactions();
   }
 
-  Future<String> _nextInvoiceNumber() async {
-    final biz = await DatabaseHelper.getBusiness();
-    final prefix = biz?['invoice_prefix'] as String? ?? 'INV';
-    final c = (biz?['invoice_counter'] as int?) ?? 1;
-    return '$prefix-${c.toString().padLeft(4, '0')}';
-  }
+  Future<String> _nextInvoiceNumber() =>
+      DatabaseHelper.peekDocNumber('sale');
 }
 
 // ── Status tab chip ─────────────────────────────────────────────────────────

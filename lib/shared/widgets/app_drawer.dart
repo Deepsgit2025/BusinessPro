@@ -107,6 +107,10 @@ class AppDrawer extends ConsumerWidget {
                   Navigator.pop(context);
                   Navigator.pushNamed(context, '/items');
                 }),
+                _DrawerItem(Icons.warehouse_outlined, AppStrings.drawerInventory, () {
+                  Navigator.pop(context);
+                  Navigator.pushNamed(context, '/inventory');
+                }),
                 _DrawerItem(Icons.money_off_outlined, AppStrings.drawerExpense, () {
                   Navigator.pop(context);
                   Navigator.pushNamed(context, '/expense');

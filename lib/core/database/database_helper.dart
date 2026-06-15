@@ -5,7 +5,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class DatabaseHelper {
   static const _dbName = 'business_pro.db';
-  static const _dbVersion = 10;
+  static const _dbVersion = 13;
 
   static Database? _db;
 
@@ -311,6 +311,42 @@ class DatabaseHelper {
       await _createStockTriggers(db);
       await _createPaymentTriggers(db);
     }
+
+    // v10 → v11: Printer phase. Seed the 45 print_* keys for existing
+    // installs. Uses ConflictAlgorithm.ignore so any key the user has already
+    // set (impossible on this exact upgrade, but safe under re-runs) is never
+    // overwritten. Gives the future Settings phase its keys with no migration.
+    if (oldVersion < 11) {
+      await preInsertPrintSettings(db);
+    }
+
+    // v11 → v12: Invoice Format 1 — transport / delivery + shipping-address
+    // fields on the transactions row, and the print_invoice_format setting.
+    // `shipping_address` already exists (since v1), so only the new columns are
+    // added; each ALTER is guarded so the migration is safe to re-run.
+    if (oldVersion < 12) {
+      await _createTransportColumns(db);
+      await db.insert(
+        'settings',
+        {'business_id': 1, 'key': 'print_invoice_format', 'value': 'format1'},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+      await db.insert(
+        'settings',
+        {'business_id': 1, 'key': 'print_estimate_format', 'value': 'format2'},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    }
+
+    // v12 → v13: employee module — overtime + advances + payroll history.
+    // Adds overtime_rate / advance_given / advance_paid to employees,
+    // overtime_hours to attendance (overtime rides on a logged day rather than
+    // being a 4th mutually-exclusive status, so the existing present/half/absent
+    // CHECK and calendar are untouched), and the salary_payments /
+    // employee_advances tables.
+    if (oldVersion < 13) {
+      await _createEmployeeExtensions(db);
+    }
   }
 
   static Future<void> _onConfigure(Database db) async {
@@ -337,6 +373,8 @@ class DatabaseHelper {
 
   static Future<void> _onCreate(Database db, int version) async {
     await _createTables(db);
+    await _createTransportColumns(db);
+    await _createEmployeeExtensions(db);
     await _createIndexes(db);
     await _createTriggers(db);
     await _seedDefaultData(db);
@@ -734,6 +772,87 @@ class DatabaseHelper {
     await db.execute('CREATE INDEX idx_emp_business ON employees(business_id)');
     await db.execute('CREATE INDEX idx_att_employee ON attendance(employee_id)');
     await db.execute('CREATE INDEX idx_att_date     ON attendance(date)');
+  }
+
+  /// Employee overtime + advances + payroll history (v13). Extracted so both
+  /// onCreate and the v13 migration share one definition. Column ALTERs are
+  /// guarded via [_addColumnIfMissing]; the CREATE TABLEs use IF NOT EXISTS — so
+  /// the whole method is safe on both fresh and upgraded DBs.
+  ///
+  /// Overtime rides on an existing attendance row as `overtime_hours` (it is
+  /// not a 4th status), so the present/half/absent CHECK constraint and the
+  /// existing calendar/roll-up keep working. `advance_given` / `advance_paid`
+  /// accumulate the running advance; outstanding = given − paid.
+  static Future<void> _createEmployeeExtensions(Database db) async {
+    await _addColumnIfMissing(db, 'employees', 'overtime_rate', 'REAL DEFAULT 0');
+    await _addColumnIfMissing(db, 'employees', 'advance_given', 'REAL DEFAULT 0');
+    await _addColumnIfMissing(db, 'employees', 'advance_paid', 'REAL DEFAULT 0');
+    await _addColumnIfMissing(
+        db, 'attendance', 'overtime_hours', 'REAL DEFAULT 0');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS salary_payments (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_id      INTEGER NOT NULL REFERENCES businesses(id),
+        employee_id      INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        payment_month    TEXT    NOT NULL,
+        salary_earned    REAL    NOT NULL DEFAULT 0,
+        cash_paid        REAL    DEFAULT 0,
+        advance_credited REAL    DEFAULT 0,
+        remaining        REAL    DEFAULT 0,
+        full_days        INTEGER DEFAULT 0,
+        half_days        INTEGER DEFAULT 0,
+        absent_days      INTEGER DEFAULT 0,
+        overtime_hours   REAL    DEFAULT 0,
+        overtime_amount  REAL    DEFAULT 0,
+        notes            TEXT,
+        payment_date     TEXT    DEFAULT (date('now')),
+        created_at       TEXT    DEFAULT (datetime('now'))
+      )
+    ''');
+
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS employee_advances (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        business_id  INTEGER NOT NULL REFERENCES businesses(id),
+        employee_id  INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+        amount       REAL    NOT NULL,
+        type         TEXT    NOT NULL CHECK(type IN ('given','credited')),
+        notes        TEXT,
+        advance_date TEXT    DEFAULT (date('now')),
+        created_at   TEXT    DEFAULT (datetime('now'))
+      )
+    ''');
+
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_salary_emp   ON salary_payments(employee_id)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_salary_month ON salary_payments(payment_month)');
+    await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_advance_emp  ON employee_advances(employee_id)');
+  }
+
+  /// Invoice Format 1 transport / delivery + shipping columns on transactions
+  /// (v12). Extracted so both onCreate and the v12 migration share one
+  /// definition. `shipping_address` predates this (added in v1) so it's omitted
+  /// here. Each ALTER is guarded via [_addColumnIfMissing] so it's safe on both
+  /// fresh and upgraded DBs.
+  static Future<void> _createTransportColumns(Database db) async {
+    const cols = <String, String>{
+      'eway_bill_number': 'TEXT',
+      'place_of_supply': 'TEXT',
+      'transport_name': 'TEXT',
+      'vehicle_number': 'TEXT',
+      'delivery_date': 'TEXT',
+      'delivery_location': 'TEXT',
+      'shipping_city': 'TEXT',
+      'shipping_state': 'TEXT',
+      'shipping_pincode': 'TEXT',
+      'is_shipping_diff': 'INTEGER DEFAULT 0',
+    };
+    for (final e in cols.entries) {
+      await _addColumnIfMissing(db, 'transactions', e.key, e.value);
+    }
   }
 
   // ─────────────────────────────────────────
@@ -1134,6 +1253,20 @@ class DatabaseHelper {
       {'key': 'default_payment_mode', 'value': 'cash'},
       {'key': 'backup_reminder_days', 'value': '7'},
       {'key': 'company_setup_done', 'value': '0'},
+      // WhatsApp invoice sharing (see AppStrings.kWhatsapp*). Auto-prompt and
+      // owner-send default on; customer-send is opt-in. Upgraders fall back to
+      // these defaults via getSetting(defaultVal:) — no migration needed.
+      {'key': 'whatsapp_auto_prompt', 'value': '1'},
+      {'key': 'whatsapp_owner_send', 'value': '1'},
+      {'key': 'whatsapp_customer_send', 'value': '0'},
+      // Invoice Format 1 (GST tax invoice with transport fields + 3 copies)
+      // and Estimate Format 2 (quotation layout with Unit column + terms).
+      {'key': 'print_invoice_format', 'value': 'format1'},
+      {'key': 'print_estimate_format', 'value': 'format2'},
+      // Phase 6 Layer 1: optional device-local PIN lock. Hash is empty until the
+      // user sets a PIN; it is the SHA-256 of the PIN, never the PIN itself.
+      {'key': 'security_pin_enabled', 'value': '0'},
+      {'key': 'security_pin_hash', 'value': ''},
     ];
     for (final s in settingsList) {
       await db.insert('settings', {'business_id': 1, ...s});
@@ -1213,6 +1346,75 @@ class DatabaseHelper {
       'is_default': 1,
       'is_active': 1,
     });
+
+    // Default print settings (45 keys). Pre-inserted here so a fresh install
+    // has every print_* key with its default value.
+    await preInsertPrintSettings(db);
+  }
+
+  /// Pre-inserts all 45 `print_*` settings keys for business 1 with their
+  /// default values. Uses [ConflictAlgorithm.ignore] so existing user choices
+  /// are never overwritten — making this safe to call from both [_seedDefaultData]
+  /// (fresh install) and the v11 [_onUpgrade] step (existing installs). The keys
+  /// here are the canonical source the future Settings phase reads, so it needs
+  /// no migration of its own.
+  static Future<void> preInsertPrintSettings(Database db) async {
+    const defaults = {
+      'print_thermal_default': '0',
+      'print_paper_size': 'mm80',
+      'print_copies': '1',
+      'print_extra_lines': '0',
+      'print_auto_cut': '0',
+      'print_cash_drawer': '0',
+      'print_text_styling': '1',
+      'print_regular_text_size': 'medium',
+      'print_page_size': 'A4',
+      'print_orientation': 'portrait',
+      'print_repeat_header': '1',
+      'print_original_duplicate': '0',
+      'print_extra_top_space': '0',
+      'print_min_item_rows': '0',
+      'print_company_name': '1',
+      'print_company_name_size': 'large',
+      'print_logo': '1',
+      'print_address': '1',
+      'print_email': '1',
+      'print_phone': '1',
+      'print_gstin': '1',
+      'print_show_sno': '1',
+      'print_show_hsn': '1',
+      'print_show_unit': '1',
+      'print_show_mrp': '1',
+      'print_show_description': '1',
+      'print_show_total_qty': '1',
+      'print_amount_decimal': '1',
+      'print_received_amount': '1',
+      'print_balance_amount': '1',
+      'print_party_balance': '0',
+      'print_tax_details': '1',
+      'print_amount_grouping': '1',
+      'print_amount_words_format': 'indian',
+      'print_you_saved': '1',
+      'print_description': '1',
+      'print_terms': '1',
+      'print_terms_text': 'Thank you for your business!',
+      'print_received_by': '1',
+      'print_delivered_by': '1',
+      'print_signature': '1',
+      'print_signature_text': 'Authorized Signatory',
+      'print_payment_mode': '0',
+      'print_page_numbers': '1',
+      'print_acknowledgement': '0',
+    };
+    final batch = db.batch();
+    defaults.forEach((key, value) {
+      batch.insert(
+        'settings',
+        {'business_id': 1, 'key': key, 'value': value},
+        conflictAlgorithm: ConflictAlgorithm.ignore,
+      );
+    });
+    await batch.commit(noResult: true);
   }
 
   // ─────────────────────────────────────────
@@ -1274,33 +1476,100 @@ class DatabaseHelper {
   /// so its existing numbering is untouched.
   static String get deviceDocPrefix => Platform.isWindows ? 'W-' : '';
 
-  static Future<String> nextInvoiceNumber() async {
-    final db = await database;
+  // ─────────────────────────────────────────
+  // PER-PREFIX DOCUMENT NUMBERING
+  // ─────────────────────────────────────────
+  //
+  // Counters are stored as settings keyed `counter_<type>_<PREFIX>` (e.g.
+  // counter_sale_INV) rather than a single column per type. This way, changing
+  // the prefix starts a fresh sequence for the new prefix and never reuses or
+  // collides with numbers issued under the old prefix — switching INV→JUNE
+  // doesn't make JUNE-0001 clash with the next INV number.
+  //
+  // The legacy `invoice_counter` / `purchase_counter` columns on the business
+  // row are the seed for the *current* prefix's key the first time it's used, so
+  // an existing install's running sequence continues unbroken. They are no
+  // longer incremented once the per-prefix key exists.
+
+  /// The active prefix for [type] ('sale' | 'purchase'). In Monthly mode
+  /// (settings key `prefix_mode_<type>` = 'monthly') this is the current month
+  /// name, recomputed live so a new month automatically starts a fresh
+  /// `counter_<type>_<MONTH>` sequence. Otherwise it's the custom prefix stored
+  /// on the business row (invoice_prefix / purchase_prefix).
+  static Future<String> prefixFor(String type) async {
+    final mode = await getSettingStr('prefix_mode_$type', defaultVal: 'custom');
+    if (mode == 'monthly') return monthlyPrefix();
     final biz = await getBusiness();
-    final prefix = biz?['invoice_prefix'] as String? ?? 'INV';
-    final counter = (biz?['invoice_counter'] as int?) ?? 1;
-    final number = '$deviceDocPrefix$prefix-${counter.toString().padLeft(4, '0')}';
-    await db.update(
-      'businesses',
-      {'invoice_counter': counter + 1},
-      where: 'id = 1',
-    );
-    return number;
+    return switch (type) {
+      'purchase' => (biz?['purchase_prefix'] as String?) ?? 'PUR',
+      _ => (biz?['invoice_prefix'] as String?) ?? 'INV',
+    };
   }
 
-  static Future<String> nextPurchaseNumber() async {
-    final db = await database;
+  /// The next counter value for [type]'s current prefix, *without* consuming it.
+  /// Seeds from the legacy column counter the first time a prefix is seen.
+  static Future<int> _peekCounter(String type, String prefix) async {
+    final key = 'counter_${type}_$prefix';
+    final existing = await getSettingStr(key);
+    if (existing.isNotEmpty) {
+      return int.tryParse(existing) ?? 1;
+    }
+    // First use of this prefix: seed from the legacy column so an in-progress
+    // sequence continues. A brand-new prefix (no matching column) starts at 1.
     final biz = await getBusiness();
-    final prefix = biz?['purchase_prefix'] as String? ?? 'PUR';
-    final counter = (biz?['purchase_counter'] as int?) ?? 1;
-    final number = '$deviceDocPrefix$prefix-${counter.toString().padLeft(4, '0')}';
-    await db.update(
-      'businesses',
-      {'purchase_counter': counter + 1},
-      where: 'id = 1',
-    );
-    return number;
+    final seed = switch (type) {
+      'purchase' => (biz?['purchase_counter'] as int?) ?? 1,
+      _ => (biz?['invoice_counter'] as int?) ?? 1,
+    };
+    return seed;
   }
+
+  /// Reads the next full document number for [type] without consuming the
+  /// counter (used by the form to display the number before save).
+  static Future<String> peekDocNumber(String type) async {
+    final prefix = await prefixFor(type);
+    final counter = await _peekCounter(type, prefix);
+    return '$deviceDocPrefix$prefix-${counter.toString().padLeft(4, '0')}';
+  }
+
+  /// Consumes and returns the next document number for [type], advancing the
+  /// per-prefix counter. Call this exactly once when a document is saved.
+  static Future<String> consumeDocNumber(String type) async {
+    final prefix = await prefixFor(type);
+    final counter = await _peekCounter(type, prefix);
+    await setSetting('counter_${type}_$prefix', '${counter + 1}');
+    return '$deviceDocPrefix$prefix-${counter.toString().padLeft(4, '0')}';
+  }
+
+  /// The current month as an uppercase prefix (e.g. 'JUNE'), for the Monthly
+  /// prefix mode. A new month yields a new prefix, which rolls a fresh
+  /// `counter_<type>_<MONTH>` sequence automatically (the monthly "reset").
+  static String monthlyPrefix([DateTime? when]) {
+    const months = [
+      'JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE',
+      'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER',
+    ];
+    return months[(when ?? DateTime.now()).month - 1];
+  }
+
+  /// Live-preview number for an arbitrary [prefix] without changing the saved
+  /// prefix or consuming the counter. Used by the prefix-settings screen.
+  static Future<String> previewDocNumber(String type, String prefix) async {
+    final counter = await _peekCounter(type, prefix);
+    return '$deviceDocPrefix$prefix-${counter.toString().padLeft(4, '0')}';
+  }
+
+  /// Resets the per-prefix counter for [type]/[prefix] back to 1. Used by the
+  /// prefix-settings "reset counter" action.
+  static Future<void> resetCounter(String type, String prefix) =>
+      setSetting('counter_${type}_$prefix', '1');
+
+  /// Consumes the next sale-invoice number (per-prefix). Retained name for the
+  /// existing callers; delegates to [consumeDocNumber].
+  static Future<String> nextInvoiceNumber() => consumeDocNumber('sale');
+
+  /// Consumes the next purchase number (per-prefix).
+  static Future<String> nextPurchaseNumber() => consumeDocNumber('purchase');
 
   static Future<String> nextReceiptNumber() async {
     final db = await database;

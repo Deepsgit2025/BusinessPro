@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Exposes the app's cache/temp dirs so the invoice PNG written by Flutter
+     (path_provider's getTemporaryDirectory → cache dir) can be granted to
+     WhatsApp via a content:// URI for the "Send to WhatsApp" native intent. -->
+<paths>
+    <cache-path name="whatsapp_cache" path="." />
+    <external-cache-path name="whatsapp_ext_cache" path="." />
+    <files-path name="whatsapp_files" path="." />
+</paths>

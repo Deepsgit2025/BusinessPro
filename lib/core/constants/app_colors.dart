@@ -3,35 +3,51 @@ import 'package:flutter/material.dart';
 class AppColors {
   AppColors._();
 
-  static const primary = Color(0xFF1B7A3D);       // Refined emerald green
-  static const primaryLight = Color(0xFF4CAF50);  // Medium green
-  static const primaryDark = Color(0xFF0E5A2A);   // Dark green
-  static const accent = Color(0xFF00C853);         // Bright green accent
+  // ── Brand (purple) ─────────────────────────────────────────────────────────
+  // The app skin: app bars, buttons, FAB, nav highlight, focus rings, brand
+  // gradients. Changing these repaints the whole app (every screen reads these
+  // semantic constants, not raw hex).
+  static const primary = Color(0xFF6A1B9A);       // Deep purple
+  static const primaryLight = Color(0xFF9C4DCC);  // Lighter purple (dark mode)
+  static const primaryDark = Color(0xFF4A148C);   // Dark purple (gradients)
+  static const accent = Color(0xFFB388FF);         // Violet pop / secondary
 
-  static const income = Color(0xFF1B7A3D);
-  static const expense = Color(0xFFE53935);
-  static const pending = Color(0xFFF57F17);
-  static const paid = Color(0xFF1B7A3D);
-  static const partial = Color(0xFF1565C0);
+  // ── Money semantics (kept conventional — NOT part of the rebrand) ───────────
+  // Positive money is green, expense red, pending amber. These have their own
+  // literals so the purple rebrand never sweeps them up.
+  static const income = Color(0xFF1B7A3D);   // green — money in
+  static const expense = Color(0xFFE53935);  // red — money out
+  static const pending = Color(0xFFF57F17);  // amber — outstanding
+  static const paid = Color(0xFF1B7A3D);     // green — settled
+  static const partial = Color(0xFF1565C0);  // blue — part-paid
 
   static const surfaceLight = Colors.white;
-  static const backgroundLight = Color(0xFFF2F5F3);
+  // Faint cool tint so white cards lift off the page (subtle depth).
+  static const backgroundLight = Color(0xFFF5F3F8);
   static const cardLight = Colors.white;
 
-  static const surfaceDark = Color(0xFF1E1E1E);
-  static const backgroundDark = Color(0xFF101512);
-  static const cardDark = Color(0xFF1C2420);
+  // Cool near-black surfaces so purple reads as the accent in dark mode.
+  static const surfaceDark = Color(0xFF1B1726);
+  static const backgroundDark = Color(0xFF12101A);
+  static const cardDark = Color(0xFF1B1726);
 
-  static const textPrimary = Color(0xFF1A2420);
-  static const textSecondary = Color(0xFF6B7770);
-  static const textHint = Color(0xFFAEB8B2);
+  static const textPrimary = Color(0xFF1C1726);
+  static const textSecondary = Color(0xFF6E6880);
+  static const textHint = Color(0xFFB1ACBE);
 
-  static const divider = Color(0xFFEAEEEC);
-  static const border = Color(0xFFE0E5E2);
+  static const divider = Color(0xFFEDEAF2);
+  static const border = Color(0xFFE3DFEC);
 
   // Gradients used for headers, hero cards and the brand accents.
   static const brandGradient = LinearGradient(
     colors: [primaryDark, primary],
+    begin: Alignment.topLeft,
+    end: Alignment.bottomRight,
+  );
+
+  /// Richer 3-stop brand gradient for hero surfaces (dashboard, headers).
+  static const heroGradient = LinearGradient(
+    colors: [primaryDark, primary, accent],
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
   );
@@ -68,7 +84,7 @@ class AppColors {
 
   /// High-emphasis body text (was `AppColors.textPrimary`).
   static Color textPrimaryOf(BuildContext c) =>
-      _isDark(c) ? const Color(0xFFE8EDEA) : textPrimary;
+      _isDark(c) ? const Color(0xFFEDEAF5) : textPrimary;
 
   /// Hairline divider / field border (was `AppColors.divider` / `border`).
   static Color dividerOf(BuildContext c) =>

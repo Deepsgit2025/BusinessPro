@@ -47,8 +47,15 @@ class TransactionShareService {
       if (format == null) return; // dismissed
     }
 
-    final bytes =
-        await InvoicePdfService.build(transaction: transaction, items: items);
+    // Sharing always sends the single Original copy for a sale invoice (the
+    // 3-copy set is print-only); other document types are unlabelled.
+    final bytes = await InvoicePdfService.build(
+      transaction: transaction,
+      items: items,
+      copyLabel: transaction.transactionType == TxnTypes.sale
+          ? InvoicePdfService.copyLabels.first
+          : null,
+    );
     final baseName = transaction.transactionNumber.replaceAll(
       RegExp(r'[^\w\-]'),
       '_',

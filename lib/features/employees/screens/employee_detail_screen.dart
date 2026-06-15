@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -6,8 +7,12 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/formatters.dart';
 import '../models/attendance.dart';
 import '../models/employee.dart';
+import '../models/salary_payment.dart';
 import '../providers/employee_providers.dart';
+import '../repositories/employee_repository.dart';
 import 'add_edit_employee_screen.dart';
+import 'give_advance_screen.dart';
+import 'salary_payment_screen.dart';
 
 /// Per-employee payroll + attendance. Shows the month's salary summary, a
 /// one-tap "log today" strip, and a tappable calendar for any day in the month.
@@ -46,10 +51,59 @@ class EmployeeDetailScreen extends ConsumerWidget {
     _refresh(ref);
   }
 
+  /// Opens the overtime-hours sheet for [date] and saves the result. Overtime
+  /// rides on the day's attendance row (it isn't a separate status), so a day
+  /// can be present/half *and* carry overtime.
+  Future<void> _editOvertime(
+    BuildContext context,
+    WidgetRef ref,
+    String date,
+    Attendance? current,
+  ) async {
+    final emp = ref.read(employeeDetailProvider(employeeId)).valueOrNull;
+    final hours = await showModalBottomSheet<double>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _OvertimeSheet(
+        date: date,
+        initialHours: current?.overtimeHours ?? 0,
+        rate: emp?.overtimeRate ?? 0,
+      ),
+    );
+    if (hours == null) return; // cancelled
+    await ref
+        .read(employeeRepositoryProvider)
+        .setOvertime(employeeId, date, hours);
+    _refresh(ref);
+  }
+
   void _refresh(WidgetRef ref) {
     ref.invalidate(attendanceMonthProvider(employeeId));
     ref.invalidate(employeeDetailProvider(employeeId));
     ref.invalidate(employeeListProvider);
+    ref.invalidate(advanceLedgerProvider(employeeId));
+    ref.invalidate(salaryHistoryProvider(employeeId));
+  }
+
+  Future<void> _giveAdvance(
+      BuildContext context, WidgetRef ref, Employee e) async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(builder: (_) => GiveAdvanceScreen(employee: e)),
+    );
+    if (saved == true) _refresh(ref);
+  }
+
+  Future<void> _openSalary(
+      BuildContext context, WidgetRef ref, Employee e, DateTime month) async {
+    final saved = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => SalaryPaymentScreen(
+            employeeId: e.id!, month: EmployeeRepository.monthKey(month)),
+      ),
+    );
+    if (saved == true) _refresh(ref);
   }
 
   @override
@@ -96,25 +150,64 @@ class EmployeeDetailScreen extends ConsumerWidget {
             return const Center(child: Text('Employee not found'));
           }
           final att = attAsync.valueOrNull ?? const {};
+          final todayKey = DateFormat('yyyy-MM-dd').format(DateTime.now());
           return ListView(
-            padding: const EdgeInsets.fromLTRB(12, 12, 12, 32),
+            padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
             children: [
               _SummaryCard(employee: employee),
+              const SizedBox(height: 16),
+              _AdvanceCard(
+                employee: employee,
+                onGiveAdvance: () => _giveAdvance(context, ref, employee),
+              ),
               const SizedBox(height: 16),
               _LogTodayStrip(
                 employeeId: employeeId,
                 attendance: att,
                 onSet: (date, status) => _setDay(ref, date, status),
+                onOvertime: () =>
+                    _editOvertime(context, ref, todayKey, att[todayKey]),
               ),
               const SizedBox(height: 16),
               _CalendarCard(
                 month: month,
                 attendance: att,
                 onTapDay: (date, current) => _cycleDay(ref, date, current),
+                onLongPressDay: (date, current) =>
+                    _editOvertime(context, ref, date, current),
               ),
+              const SizedBox(height: 16),
+              _SalaryHistoryCard(employeeId: employeeId),
             ],
           );
         },
+      ),
+      // "Calculate Salary" is pinned here so it stays visible while the user
+      // scrolls the calendar, rather than being buried in the history card.
+      bottomNavigationBar: empAsync.maybeWhen(
+        data: (employee) => employee == null
+            ? null
+            : SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      minimumSize: const Size(double.infinity, 48),
+                      backgroundColor: AppColors.primary,
+                    ),
+                    onPressed: () => _openSalary(context, ref, employee, month),
+                    child: const Text(
+                      'Calculate Salary for this Month',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+        orElse: () => null,
       ),
     );
   }
@@ -255,17 +348,21 @@ class _LogTodayStrip extends StatelessWidget {
   final int employeeId;
   final Map<String, Attendance> attendance;
   final void Function(String date, AttendanceStatus status) onSet;
+  final VoidCallback onOvertime;
   const _LogTodayStrip({
     required this.employeeId,
     required this.attendance,
     required this.onSet,
+    required this.onOvertime,
   });
 
   @override
   Widget build(BuildContext context) {
     final today = DateTime.now();
     final dateKey = DateFormat('yyyy-MM-dd').format(today);
-    final current = attendance[dateKey]?.status;
+    final todayAtt = attendance[dateKey];
+    final current = todayAtt?.status;
+    final ot = todayAtt?.overtimeHours ?? 0;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -301,6 +398,285 @@ class _LogTodayStrip extends StatelessWidget {
                 if (s != AttendanceStatus.values.last)
                   const SizedBox(width: 8),
               ],
+            ],
+          ),
+          const SizedBox(height: 10),
+          // Overtime is additive to the day's status, so it sits on its own row.
+          OutlinedButton.icon(
+            onPressed: onOvertime,
+            icon: Icon(Icons.more_time_outlined,
+                size: 18,
+                color: ot > 0 ? AppColors.accent : AppColors.textSecondary),
+            label: Text(
+              ot > 0
+                  ? 'Overtime: ${Formatters.plain(ot)} h'
+                  : 'Add overtime',
+              style: TextStyle(
+                color: ot > 0 ? AppColors.accent : AppColors.textSecondary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            style: OutlinedButton.styleFrom(
+              minimumSize: const Size.fromHeight(40),
+              side: BorderSide(
+                  color: ot > 0 ? AppColors.accent : AppColors.border),
+              shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Prominent advance-outstanding card with a "Give Advance" action.
+class _AdvanceCard extends StatelessWidget {
+  final Employee employee;
+  final VoidCallback onGiveAdvance;
+  const _AdvanceCard({required this.employee, required this.onGiveAdvance});
+
+  @override
+  Widget build(BuildContext context) {
+    final outstanding = employee.advanceOutstanding;
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardLight,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('ADVANCE OUTSTANDING',
+                    style: TextStyle(
+                        fontSize: 11,
+                        letterSpacing: 1.2,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.textSecondary)),
+                const SizedBox(height: 4),
+                Text(
+                  Formatters.currency(outstanding),
+                  style: TextStyle(
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                    color: outstanding > 0
+                        ? AppColors.expense
+                        : AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          FilledButton.icon(
+            onPressed: onGiveAdvance,
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Give Advance'),
+            style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Salary history list. The "Calculate Salary" action now lives in the screen's
+/// pinned bottom bar, so this card is history-only.
+class _SalaryHistoryCard extends ConsumerWidget {
+  final int employeeId;
+  const _SalaryHistoryCard({required this.employeeId});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final historyAsync = ref.watch(salaryHistoryProvider(employeeId));
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.cardLight,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.receipt_long_outlined,
+                  size: 18, color: AppColors.primary),
+              const SizedBox(width: 8),
+              const Text('Salary History',
+                  style:
+                      TextStyle(fontWeight: FontWeight.w600, fontSize: 14)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          historyAsync.when(
+            loading: () => const Padding(
+              padding: EdgeInsets.all(12),
+              child: Center(child: CircularProgressIndicator()),
+            ),
+            error: (e, _) => Text('Error: $e'),
+            data: (list) {
+              if (list.isEmpty) {
+                return const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Text('No salary paid yet',
+                      style: TextStyle(color: AppColors.textSecondary)),
+                );
+              }
+              return Column(
+                children: [
+                  for (final p in list) _SalaryHistoryRow(payment: p),
+                ],
+              );
+            },
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SalaryHistoryRow extends StatelessWidget {
+  final SalaryPayment payment;
+  const _SalaryHistoryRow({required this.payment});
+
+  @override
+  Widget build(BuildContext context) {
+    final monthLabel = () {
+      final parts = payment.paymentMonth.split('-');
+      if (parts.length != 2) return payment.paymentMonth;
+      final y = int.tryParse(parts[0]) ?? 2000;
+      final m = int.tryParse(parts[1]) ?? 1;
+      return DateFormat('MMM yyyy').format(DateTime(y, m));
+    }();
+    final splitText = payment.advanceCredited > 0
+        ? '${Formatters.currency(payment.cashPaid)} cash + '
+            '${Formatters.currency(payment.advanceCredited)} advance'
+        : '${Formatters.currency(payment.cashPaid)} cash';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(monthLabel,
+                    style: const TextStyle(fontWeight: FontWeight.w600)),
+                Text(splitText,
+                    style: const TextStyle(
+                        fontSize: 12, color: AppColors.textSecondary)),
+              ],
+            ),
+          ),
+          Text(Formatters.currency(payment.salaryEarned),
+              style: const TextStyle(fontWeight: FontWeight.w700)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Bottom sheet to enter overtime hours for a day, showing the computed pay.
+class _OvertimeSheet extends StatefulWidget {
+  final String date;
+  final double initialHours;
+  final double rate;
+  const _OvertimeSheet({
+    required this.date,
+    required this.initialHours,
+    required this.rate,
+  });
+
+  @override
+  State<_OvertimeSheet> createState() => _OvertimeSheetState();
+}
+
+class _OvertimeSheetState extends State<_OvertimeSheet> {
+  late final TextEditingController _hours;
+
+  @override
+  void initState() {
+    super.initState();
+    _hours = TextEditingController(
+        text: widget.initialHours == 0
+            ? ''
+            : Formatters.plain(widget.initialHours));
+  }
+
+  @override
+  void dispose() {
+    _hours.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final hours = double.tryParse(_hours.text.trim()) ?? 0;
+    final pay = hours * widget.rate;
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20,
+        right: 20,
+        top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Overtime · ${DateFormat('dd MMM yyyy').format(
+              DateTime.tryParse(widget.date) ?? DateTime.now())}',
+              style:
+                  const TextStyle(fontSize: 17, fontWeight: FontWeight.w700)),
+          const SizedBox(height: 16),
+          TextField(
+            controller: _hours,
+            autofocus: true,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
+            ],
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              labelText: 'Hours',
+              suffixText: 'h',
+              border: OutlineInputBorder(),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            widget.rate > 0
+                ? 'Overtime pay: ${Formatters.currency(widget.rate)}/hr × '
+                    '${Formatters.plain(hours)} = ${Formatters.currency(pay)}'
+                : 'Set an overtime rate on the employee to value this.',
+            style: const TextStyle(
+                fontSize: 13, color: AppColors.textSecondary),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  style:
+                      FilledButton.styleFrom(backgroundColor: AppColors.primary),
+                  onPressed: () => Navigator.pop(context, hours),
+                  child: const Text('Confirm'),
+                ),
+              ),
             ],
           ),
         ],
@@ -358,10 +734,12 @@ class _CalendarCard extends StatelessWidget {
   final DateTime month;
   final Map<String, Attendance> attendance;
   final void Function(String date, Attendance? current) onTapDay;
+  final void Function(String date, Attendance? current) onLongPressDay;
   const _CalendarCard({
     required this.month,
     required this.attendance,
     required this.onTapDay,
+    required this.onLongPressDay,
   });
 
   @override
@@ -434,6 +812,7 @@ class _CalendarCard extends StatelessWidget {
                   isFuture: DateTime(month.year, month.month, day)
                       .isAfter(DateTime(today.year, today.month, today.day)),
                   onTap: onTapDay,
+                  onLongPress: onLongPressDay,
                 ),
             ],
           ),
@@ -444,8 +823,12 @@ class _CalendarCard extends StatelessWidget {
             children: [
               for (final s in AttendanceStatus.values)
                 _LegendDot(color: _statusColor(s), label: s.label),
+              const _LegendDot(color: AppColors.accent, label: 'Overtime ⭐'),
             ],
           ),
+          const SizedBox(height: 6),
+          const Text('Long-press a day to add overtime',
+              style: TextStyle(fontSize: 11, color: AppColors.textHint)),
         ],
       ),
     );
@@ -459,6 +842,7 @@ class _DayCell extends StatelessWidget {
   final bool isToday;
   final bool isFuture;
   final void Function(String date, Attendance? current) onTap;
+  final void Function(String date, Attendance? current) onLongPress;
   const _DayCell({
     required this.day,
     required this.date,
@@ -466,6 +850,7 @@ class _DayCell extends StatelessWidget {
     required this.isToday,
     required this.isFuture,
     required this.onTap,
+    required this.onLongPress,
   });
 
   @override
@@ -473,6 +858,7 @@ class _DayCell extends StatelessWidget {
     final dateKey = DateFormat('yyyy-MM-dd').format(date);
     final status = attendance?.status;
     final color = status == null ? null : _statusColor(status);
+    final hasOt = attendance?.hasOvertime ?? false;
 
     return Opacity(
       opacity: isFuture ? 0.35 : 1,
@@ -487,15 +873,27 @@ class _DayCell extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(10),
           onTap: isFuture ? null : () => onTap(dateKey, attendance),
-          child: Center(
-            child: Text(
-              '$day',
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: isToday ? FontWeight.bold : FontWeight.w500,
-                color: color != null ? Colors.white : AppColors.textPrimary,
+          onLongPress: isFuture ? null : () => onLongPress(dateKey, attendance),
+          child: Stack(
+            children: [
+              Center(
+                child: Text(
+                  '$day',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: isToday ? FontWeight.bold : FontWeight.w500,
+                    color:
+                        color != null ? Colors.white : AppColors.textPrimary,
+                  ),
+                ),
               ),
-            ),
+              if (hasOt)
+                const Positioned(
+                  top: 2,
+                  right: 3,
+                  child: Text('⭐', style: TextStyle(fontSize: 8)),
+                ),
+            ],
           ),
         ),
       ),

@@ -2,6 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/attendance.dart';
 import '../models/employee.dart';
+import '../models/employee_advance.dart';
+import '../models/salary_payment.dart';
 import '../repositories/employee_repository.dart';
 
 final employeeRepositoryProvider =
@@ -43,4 +45,18 @@ final attendanceMonthProvider =
   final repo = ref.watch(employeeRepositoryProvider);
   final month = ref.watch(payrollMonthKeyProvider);
   return repo.attendanceForMonth(id, month);
+});
+
+/// One employee's advance ledger (newest first).
+final advanceLedgerProvider =
+    FutureProvider.family<List<EmployeeAdvance>, int>((ref, id) async {
+  final repo = ref.watch(employeeRepositoryProvider);
+  return repo.advancesFor(id);
+});
+
+/// One employee's salary payout history (newest month first).
+final salaryHistoryProvider =
+    FutureProvider.family<List<SalaryPayment>, int>((ref, id) async {
+  final repo = ref.watch(employeeRepositoryProvider);
+  return repo.salaryHistory(id);
 });
