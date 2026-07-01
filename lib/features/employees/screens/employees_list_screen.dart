@@ -200,9 +200,26 @@ class _EmployeeTile extends StatelessWidget {
           ),
         ),
       ),
-      title: Text(
-        employee.name,
-        style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w500),
+      title: Row(
+        children: [
+          // Name flexes and ellipsizes so a long name never pushes the counts
+          // off the row — they stay on the same line.
+          Flexible(
+            child: Text(
+              employee.name,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            'Present ${employee.presentDays}  '
+            'Half ${employee.halfDays}  '
+            'Absent ${employee.absentDays}',
+            style: const TextStyle(
+                fontSize: 11.5, color: AppColors.textSecondary),
+          ),
+        ],
       ),
       trailing: const Icon(Icons.chevron_right, color: AppColors.textHint),
       onTap: onTap,

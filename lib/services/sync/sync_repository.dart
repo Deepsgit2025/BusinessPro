@@ -38,6 +38,13 @@ class SyncRepository {
     // can't timestamp (acceptable: these change rarely and are small).
     'item_units': "'1970-01-01'",
     'expense_categories': "'1970-01-01'",
+    // Employee module (v14). employees has updated_at + created_at from v7; the
+    // three child tables track by created_at but were given an updated_at in
+    // v14 so an edited row carries a fresh latest-wins timestamp.
+    'employees': "COALESCE(t.updated_at, t.created_at, '1970-01-01')",
+    'attendance': "COALESCE(t.updated_at, t.created_at, '1970-01-01')",
+    'salary_payments': "COALESCE(t.updated_at, t.created_at, '1970-01-01')",
+    'employee_advances': "COALESCE(t.updated_at, t.created_at, '1970-01-01')",
   };
 
   /// Cross-table foreign keys that hold a *local integer id* and therefore mean
@@ -70,6 +77,18 @@ class SyncRepository {
     'payments': {
       'transaction_id': 'transactions',
       'account_id': 'accounts',
+    },
+    // Employee module (v14): each child holds the parent's local integer
+    // employee_id, meaningless on the other device — remap via the parent's
+    // uuid. business_id is always 1 (excluded, like everywhere else).
+    'attendance': {
+      'employee_id': 'employees',
+    },
+    'salary_payments': {
+      'employee_id': 'employees',
+    },
+    'employee_advances': {
+      'employee_id': 'employees',
     },
   };
 
@@ -260,6 +279,50 @@ class SyncRepository {
     return rows.isEmpty ? null : rows.first;
   }
 
+  /// Tables with a cross-device NATURAL identity — a uniqueness constraint that
+  /// two devices can independently satisfy, producing two rows with the SAME
+  /// logical key but DIFFERENT uuids. Without special handling the merge's
+  /// uuid-only match would see the remote row as new and hit the local UNIQUE
+  /// constraint (ConflictAlgorithm.replace would then delete the local row,
+  /// losing its uuid and bouncing duplicates forever). Listing the natural-key
+  /// columns lets the merge fall back to matching by them.
+  ///
+  /// `attendance` is UNIQUE(employee_id, date). employee_id is a FK remapped to
+  /// the LOCAL id before this lookup, so we match on the local id + date.
+  static const _naturalIdentity = <String, List<String>>{
+    'attendance': ['employee_id', 'date'],
+  };
+
+  bool hasNaturalIdentity(String table) =>
+      _naturalIdentity.containsKey(table);
+
+  /// Finds the local row in [table] matching the natural-key columns carried by
+  /// [localRow] (whose FK columns must already be remapped to local ids). Used
+  /// when a uuid lookup misses but a same-key row may already exist from the
+  /// other device. Returns null if the table has no natural identity or no row
+  /// matches.
+  Future<Map<String, dynamic>?> findByNaturalKey(
+      String table, Map<String, dynamic> localRow) async {
+    final keys = _naturalIdentity[table];
+    if (keys == null) return null;
+    // If any key column is unresolved (e.g. employee_id didn't remap), we can't
+    // match — let the caller treat it as a fresh row.
+    if (keys.any((k) => localRow[k] == null)) return null;
+    final db = await DatabaseHelper.database;
+    final where = keys.map((k) => '$k = ?').join(' AND ');
+    final args = keys.map((k) => localRow[k]).toList();
+    final rows =
+        await db.query(table, where: where, whereArgs: args, limit: 1);
+    return rows.isEmpty ? null : rows.first;
+  }
+
+  /// Remaps the FK columns of [data] to local ids without writing anything —
+  /// used so the merge can compute a natural-key lookup (which needs the local
+  /// employee_id) before deciding insert vs. update.
+  Future<Map<String, dynamic>> remapForeignKeysForLookup(
+          String table, Map<String, dynamic> data) =>
+      _remapForeignKeys(table, Map<String, dynamic>.from(data));
+
   /// Inserts a remote row that doesn't exist locally. Foreign keys that
   /// reference other tables by integer id are remapped from the accompanying
   /// uuid where one is provided (see [_remapForeignKeys]); rows whose parents
@@ -292,6 +355,22 @@ class SyncRepository {
     await db.update(table, row, where: 'uuid = ?', whereArgs: [uuid]);
   }
 
+  /// Overwrites the local row at [localId] with remote data AND adopts the
+  /// remote [uuid]. Used for a natural-key collision (two devices independently
+  /// created the same logical row with different uuids): the loser's row is
+  /// rewritten to the winner's uuid + data so both devices converge on one
+  /// identity instead of bouncing two rows that violate the UNIQUE constraint.
+  Future<void> updateFromSyncByLocalId(String table, int localId, String uuid,
+      Map<String, dynamic> data, DateTime effectiveUpdatedAt) async {
+    final row = await _remapForeignKeys(table, Map<String, dynamic>.from(data));
+    row.remove('id');
+    row['uuid'] = uuid; // adopt the winning uuid so identities converge
+    row['is_synced'] = 1;
+    _stampUpdatedAt(table, row, effectiveUpdatedAt);
+    final db = await DatabaseHelper.database;
+    await db.update(table, row, where: 'id = ?', whereArgs: [localId]);
+  }
+
   /// Tables that carry an `updated_at` column the merge compares against. We
   /// overwrite it with the changeset's authoritative time (stored canonically as
   /// ISO-8601) so subsequent comparisons are stable and format-independent.
@@ -301,6 +380,13 @@ class SyncRepository {
     'items',
     'accounts',
     'transaction_items',
+    // Employee module (v14): all four carry updated_at (employees from v7, the
+    // three children from the v14 ALTER) so the merge stamps the authoritative
+    // time and the row isn't re-"updated" on every subsequent sync.
+    'employees',
+    'attendance',
+    'salary_payments',
+    'employee_advances',
   };
 
   void _stampUpdatedAt(
@@ -331,6 +417,11 @@ class SyncRepository {
     // payments.transaction_id is NOT NULL → a payment must wait for its parent
     // transaction to merge first, else it fails the NOT NULL constraint (1299).
     'payments': ('transaction_id', 'transactions'),
+    // Employee children: employee_id is NOT NULL + cascades off employees, so
+    // each must wait for its parent employee to merge first.
+    'attendance': ('employee_id', 'employees'),
+    'salary_payments': ('employee_id', 'employees'),
+    'employee_advances': ('employee_id', 'employees'),
   };
 
   /// Rewrites every uuid-carried foreign key in [data] back into the local

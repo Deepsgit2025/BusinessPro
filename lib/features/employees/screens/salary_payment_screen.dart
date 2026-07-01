@@ -184,8 +184,11 @@ class _SalaryPaymentScreenState extends ConsumerState<SalaryPaymentScreen> {
           _kv('Half days', '${e.halfDays}',
               Formatters.currency(e.halfDays * e.dailyPay / 2)),
           _kv('Absent days', '${e.absentDays}', Formatters.currency(0)),
-          if (e.overtimeHours > 0)
-            _kv('Overtime', '${Formatters.plain(e.overtimeHours)} hrs',
+          // Overtime is a signed net: positive adds, a negative net (more
+          // early-leave than overtime) deducts. Show either, hide only at zero.
+          if (e.overtimeHours != 0)
+            _kv(e.overtimeHours < 0 ? 'Overtime (early leave)' : 'Overtime',
+                '${Formatters.plain(e.overtimeHours)} hrs',
                 Formatters.currency(e.overtimeHours * e.overtimeRate)),
           const Divider(),
           _kv('Gross Salary', '', Formatters.currency(gross), bold: true),

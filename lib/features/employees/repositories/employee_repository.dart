@@ -170,6 +170,8 @@ class EmployeeRepository {
       'day_value': status.dayValue,
       'overtime_hours': ot,
       'note': note,
+      // Stamp the edit time so the latest-wins sync merge can compare it.
+      'updated_at': DateTime.now().toIso8601String(),
     };
     if (existing.isEmpty) {
       await db.insert('attendance', values);
@@ -191,6 +193,7 @@ class EmployeeRepository {
       whereArgs: [employeeId, date],
       limit: 1,
     );
+    final now = DateTime.now().toIso8601String();
     if (existing.isEmpty) {
       await db.insert('attendance', {
         'employee_id': employeeId,
@@ -198,9 +201,10 @@ class EmployeeRepository {
         'status': AttendanceStatus.present.db,
         'day_value': AttendanceStatus.present.dayValue,
         'overtime_hours': hours,
+        'updated_at': now,
       });
     } else {
-      await db.update('attendance', {'overtime_hours': hours},
+      await db.update('attendance', {'overtime_hours': hours, 'updated_at': now},
           where: 'id = ?', whereArgs: [existing.first['id']]);
     }
   }

@@ -17,8 +17,8 @@ that intentionally does nothing · **[BUGGY]** wired but has a real defect.
 
 | Concern | Reality |
 |---|---|
-| **State management** | **Riverpod** (`flutter_riverpod` ^2.6.1), **hand-written providers only**. `riverpod_annotation`/`riverpod_generator`/`riverpod_lint` are in `pubspec.yaml` but **unused** — there are **zero `@riverpod` annotations and zero `.g.dart` files** in `lib/`. |
-| **Navigation** | **`MaterialApp` with a `routes:` map + `Navigator.push`** ([main.dart](lib/main.dart)). `go_router` ^15.1.2 is a dependency but **not used anywhere** in `lib/`. |
+| **State management** | **Riverpod** (`flutter_riverpod` ^2.6.1), **hand-written providers only — NO code generation**. Confirmed in active use across ~60 files (~508 Riverpod API usages: `ConsumerWidget`, `ref.watch`/`ref.read`, `FutureProvider`, `StateProvider`, `Provider`, `.family`, `ProviderScope`). The codegen/lint deps (`riverpod_annotation`, `riverpod_generator`, `riverpod_lint`, `custom_lint`) were confirmed unused and **removed**. One exception: [app_lock_service.dart](lib/services/security/app_lock_service.dart) uses the Flutter SDK's `ChangeNotifier` as a singleton (`AppLockService.instance`), observed by the widget layer with a listenable builder — **not** a Riverpod provider, so integrate with it via `.instance` + a `ListenableBuilder`, not `ref.watch`. |
+| **Navigation** | **`MaterialApp` with a `routes:` map + `Navigator.push`** ([main.dart](lib/main.dart)). (`go_router` was a dependency but used nowhere in `lib/` — **removed**.) |
 | **Database** | SQLite via `sqflite` (Android) / `sqflite_common_ffi` (Windows/Linux). **Schema version 13.** WAL mode. All access through `DatabaseHelper` static methods + per-feature repositories. |
 | **PDF / Print** | `pdf` + `printing` for documents; `flutter_blue_plus` (BT) + raw socket (network) for ESC/POS thermal. |
 | **OCR** | `google_mlkit_text_recognition` (on-device, Android only). |
@@ -32,6 +32,20 @@ settings/counters key on `business_id = 1`.
 
 ## Folder structure (real)
 
+**Convention: feature-first.** App code lives under `lib/features/<feature>/`,
+each feature owning its own `{screens,widgets,providers,models,repositories,
+services,utils}` subfolders — there is **no** top-level `lib/screens/`, `lib/models/`,
+or `lib/repositories/` layer holding the bulk of the app. Models and repositories
+live *inside* their feature folder (e.g.
+[transaction.dart](lib/features/transactions/models/transaction.dart),
+[transaction_repository.dart](lib/features/transactions/repositories/transaction_repository.dart)).
+Two deliberate hybrids break the pattern: cross-feature **services** are grouped
+layer-first under `lib/services/<area>/` (sync, printer, ocr, backup, whatsapp,
+security), and the **security UI** sits at `lib/screens/security/` +
+`lib/widgets/security/` rather than in a `features/security/` folder. Shared
+scaffolding (drawer, shell, empty-state) is under `lib/shared/widgets/`, and
+app-wide constants/db/providers/utils under `lib/core/`.
+
 ```
 lib/
 ├── main.dart                         # [DONE] entry; Firebase init, DB init, PIN preload, MaterialApp routes
@@ -42,11 +56,12 @@ lib/
 │   ├── providers/                    # business, notification, settings, theme providers
 │   └── utils/                        # formatters, amount_to_words
 ├── features/
-│   ├── dashboard/                    # [PARTIAL] summary cards + quick actions + recent txns (recent list not tappable)
+│   ├── dashboard/                    # [DONE] summary cards + quick actions + recent txns (recent list tappable → detail, routed by type)
 │   ├── parties/                      # [DONE] customers/suppliers CRUD, detail, statement
 │   ├── items/                        # [DONE] items, categories, units, tax rates, multi-tier unit pricing
 │   ├── inventory/                    # [DONE] read-only stock views derived from transactions
 │   ├── transactions/                 # [DONE] sale/purchase/returns/estimate/challan/payments + PDF + share
+│   │                                 #        NOTE: one generic SaleDetailScreen renders ALL txn types — no per-type detail screen
 │   ├── cash_bank/                    # [DONE] accounts, statement, money transfer
 │   ├── expense/ + income/            # [DONE] income reuses ExpenseListScreen(isIncome: true)
 │   ├── employees/                    # [DONE] employees, attendance, advances, salary payments, slip PDF
@@ -167,14 +182,16 @@ every transaction write (`invalidateTransactionData`). Loading/error fall back t
 `payment_in`/`payment_out`/returns standing alone — outstanding is computed off the
 sale/purchase document balance, which the payment triggers keep current.
 
-### 2. Recent Transactions query — **[PARTIAL] — wired, but rows are not tappable [BUGGY-minor]**
+### 2. Recent Transactions query — **[DONE], wired & tappable**
 `recentTransactionsProvider`
 ([transaction_providers.dart](lib/features/transactions/providers/transaction_providers.dart#L286))
 lists `sale, purchase, expense, other_income`, newest first, `.take(10)`. The list
-renders correctly via `TransactionCard`. **But the dashboard passes `onTap: () {}`**
-([dashboard_screen.dart](lib/features/dashboard/screens/dashboard_screen.dart#L339)) —
-tapping a recent transaction does nothing (no navigation to detail). The data path is
-fine; only the tap handler is a no-op.
+renders via `TransactionCard`, and each card's `onTap` calls `_openTransaction`
+([dashboard_screen.dart](lib/features/dashboard/screens/dashboard_screen.dart#L292),
+wired at [L375](lib/features/dashboard/screens/dashboard_screen.dart#L375)), which routes
+by type: `expense` → `/expense`, `other_income` → `/income`, everything else →
+`SaleDetailScreen(transactionId:)`. On return it refreshes the recent list and the
+To Collect / To Pay totals. (Previously a no-op `onTap: () {}`; now resolved.)
 
 ### 3. Salary slip PDF preview — **[DONE], fully wired**
 [salary_slip_preview_screen.dart](lib/features/employees/screens/salary_slip_preview_screen.dart)
@@ -231,14 +248,23 @@ Real, not stubbed. Android↔Windows row-level merge.
 
 ## Notable "differs from intended design" / gotchas
 
-1. **`go_router` is a dependency but unused.** Navigation is `MaterialApp.routes` +
-   `Navigator.push`/`pushNamed`. Don't assume go_router routing.
-2. **Riverpod code-gen is configured but unused.** No `@riverpod`, no `.g.dart`. All
+1. **Navigation is `MaterialApp.routes` + `Navigator.push`/`pushNamed`.** Don't assume
+   go_router routing (the unused `go_router` dep has been **removed**).
+2. **Riverpod is hand-written, no code-gen.** No `@riverpod`, no `.g.dart`. All
    providers are hand-written (`FutureProvider`, `StateProvider`, `Provider`,
-   `.family`). The `riverpod_generator`/`build_runner`/`riverpod_lint` dev-deps are dead
-   weight relative to actual usage.
-3. **Recent-transactions cards on the dashboard are not tappable** (`onTap: () {}`) —
-   the one concrete dead-end in an otherwise wired dashboard.
+   `.family`). The dead codegen/lint deps (`riverpod_annotation`, `riverpod_generator`,
+   `build_runner`, `riverpod_lint`, `custom_lint`) were confirmed unused and **removed**;
+   `flutter_riverpod` remains and is load-bearing. **Gotcha:** the app-lock state is the
+   one non-Riverpod piece — [app_lock_service.dart](lib/services/security/app_lock_service.dart)
+   is a `ChangeNotifier` singleton reached via `AppLockService.instance` and observed
+   with a `ListenableBuilder`, not `ref.watch`.
+3. **Recent-transactions cards on the dashboard are now tappable** — the card's
+   `onTap` calls `_openTransaction`
+   ([dashboard_screen.dart](lib/features/dashboard/screens/dashboard_screen.dart#L292)),
+   which routes by type: `expense` → `/expense`, `other_income` → `/income`, and
+   everything else → `SaleDetailScreen(transactionId:)` (the one generic detail
+   screen). On return it refreshes the recent list and the To Collect / To Pay
+   totals (was previously a no-op `onTap: () {}`).
 4. **Single-business only.** `business_id = 1` is hardcoded across repositories,
    settings, and seed data; there is no business-switching path despite the
    `businesses` table being keyed by id.
@@ -252,6 +278,16 @@ Real, not stubbed. Android↔Windows row-level merge.
 8. **Sync correctness depends on the `is_synced` trigger guards.** Removing/altering the
    stock or payment triggers without preserving `COALESCE(NEW.is_synced,0)=0` will
    double-apply stock and account balances on every sync (this was the v10 fix).
+9. **Inserting an "already-synced" row (`is_synced=1`) with a NULL `uuid` silently
+   clears the synced flag.** On insert, `trg_sync_uuid_<table>` fires (`WHEN NEW.uuid
+   IS NULL`) and issues an AFTER-INSERT `UPDATE` to fill the uuid — which in turn trips
+   `trg_sync_dirty_<table>` (`WHEN NEW.is_synced = OLD.is_synced AND OLD.is_synced = 1`),
+   flipping `is_synced` back to **0**. Net effect: the row you meant to mark synced is
+   marked dirty and re-uploads on the next sync. Real sync-merged rows always arrive
+   *with* a uuid (the source device generated it), so this never bites in production —
+   but **any new code that inserts a row already considered synced MUST supply a uuid**
+   (and the migration tests follow this rule: every `is_synced=1` raw insert sets an
+   explicit `uuid`).
 
 ---
 

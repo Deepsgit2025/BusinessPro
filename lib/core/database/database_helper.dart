@@ -5,7 +5,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class DatabaseHelper {
   static const _dbName = 'business_pro.db';
-  static const _dbVersion = 13;
+  static const _dbVersion = 16;
 
   static Database? _db;
 
@@ -55,6 +55,21 @@ class DatabaseHelper {
       onConfigure: _onConfigure,
     );
   }
+
+  // ─────────────────────────────────────────
+  // TEST SEAM
+  // ─────────────────────────────────────────
+  // Public, read-only handles to the real migration callbacks + version so a
+  // host migration test can drive the ACTUAL _onCreate/_onUpgrade/_onConfigure
+  // against a test-controlled (temp/in-memory) database opened at any starting
+  // version. Production code is unaffected — _initDb still wires the private
+  // members directly and nothing here changes runtime behavior. These exist so
+  // tests exercise the real migration code, never a copy of the SQL.
+  static int get schemaVersion => _dbVersion;
+  static Future<void> Function(Database, int) get onCreateForTest => _onCreate;
+  static Future<void> Function(Database, int, int) get onUpgradeForTest =>
+      _onUpgrade;
+  static Future<void> Function(Database) get onConfigureForTest => _onConfigure;
 
   // ─────────────────────────────────────────
   // MIGRATIONS
@@ -346,6 +361,49 @@ class DatabaseHelper {
     // employee_advances tables.
     if (oldVersion < 13) {
       await _createEmployeeExtensions(db);
+    }
+
+    // v13 → v14: bring the employee module into Phase-5 sync. The employee
+    // tables (employees / attendance / salary_payments / employee_advances)
+    // were never registered as synced tables, so they had no uuid identity,
+    // no device_id/is_synced tracking, and no stamping/dirty triggers — and
+    // the engine neither exported nor merged them. They are now in
+    // [syncedTables] + the `tracked` list, so re-running the sync-schema steps
+    // (all of which loop those lists and are column-aware + idempotent) adds
+    // everything to the four tables in place:
+    //   - uuid on all four; device_id/is_synced/server_updated_at on all four;
+    //   - the AFTER INSERT uuid/device_id stamp + AFTER UPDATE dirty triggers;
+    //   - a one-time uuid backfill onto existing employee/attendance/etc rows.
+    // It is safe to re-run for the already-synced tables (ALTERs are guarded,
+    // triggers use IF NOT EXISTS, the backfill only fills NULL uuids).
+    if (oldVersion < 14) {
+      // The three child tables track edits by created_at only; give them an
+      // updated_at so an edited attendance/salary/advance row carries a fresh
+      // timestamp the latest-wins merge can compare. (employees already has
+      // updated_at from v7.)
+      await _addColumnIfMissing(db, 'attendance', 'updated_at', 'TEXT');
+      await _addColumnIfMissing(db, 'salary_payments', 'updated_at', 'TEXT');
+      await _addColumnIfMissing(db, 'employee_advances', 'updated_at', 'TEXT');
+      await _createSyncColumns(db);
+      await _createSyncTriggers(db);
+      await _createSyncUpdateTriggers(db);
+      await _backfillSyncUuids(db);
+    }
+
+    // v14 → v15: free-text billing name on a transaction. Lets a one-off
+    // customer/supplier be named directly on the document without creating a
+    // party record. Null for existing rows (they keep using party_id).
+    if (oldVersion < 15) {
+      await _addColumnIfMissing(db, 'transactions', 'billing_name', 'TEXT');
+    }
+
+    // v15 → v16: free-text billing GSTIN + address on a transaction, alongside
+    // the v15 billing_name. Lets a one-off customer/supplier carry its own
+    // GSTIN/address on the document without a party record. Null for existing
+    // rows (party-linked docs read these off the party).
+    if (oldVersion < 16) {
+      await _addColumnIfMissing(db, 'transactions', 'billing_gstin', 'TEXT');
+      await _addColumnIfMissing(db, 'transactions', 'billing_address', 'TEXT');
     }
   }
 
@@ -651,6 +709,9 @@ class DatabaseHelper {
                               )),
         transaction_number    TEXT    NOT NULL,
         reference_number      TEXT,
+        billing_name          TEXT,
+        billing_gstin         TEXT,
+        billing_address       TEXT,
         transaction_date      TEXT    NOT NULL,
         due_date              TEXT,
         subtotal              REAL    DEFAULT 0,
@@ -790,6 +851,13 @@ class DatabaseHelper {
     await _addColumnIfMissing(
         db, 'attendance', 'overtime_hours', 'REAL DEFAULT 0');
 
+    // updated_at on attendance (it otherwise tracks by created_at only). The
+    // latest-wins sync merge (v14) compares this so an edited day re-syncs.
+    // attendance predates v13, so it needs a guarded ALTER; salary_payments /
+    // employee_advances carry updated_at directly in their CREATE TABLE below.
+    // employees already has updated_at from its v7 definition.
+    await _addColumnIfMissing(db, 'attendance', 'updated_at', 'TEXT');
+
     await db.execute('''
       CREATE TABLE IF NOT EXISTS salary_payments (
         id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -807,7 +875,8 @@ class DatabaseHelper {
         overtime_amount  REAL    DEFAULT 0,
         notes            TEXT,
         payment_date     TEXT    DEFAULT (date('now')),
-        created_at       TEXT    DEFAULT (datetime('now'))
+        created_at       TEXT    DEFAULT (datetime('now')),
+        updated_at       TEXT
       )
     ''');
 
@@ -820,7 +889,8 @@ class DatabaseHelper {
         type         TEXT    NOT NULL CHECK(type IN ('given','credited')),
         notes        TEXT,
         advance_date TEXT    DEFAULT (date('now')),
-        created_at   TEXT    DEFAULT (datetime('now'))
+        created_at   TEXT    DEFAULT (datetime('now')),
+        updated_at   TEXT
       )
     ''');
 
@@ -871,6 +941,12 @@ class DatabaseHelper {
     'accounts',
     'expense_categories',
     'item_categories',
+    // Employee module (added v14). employees is the parent; attendance,
+    // salary_payments and employee_advances cascade off it (employee_id FK).
+    'employees',
+    'attendance',
+    'salary_payments',
+    'employee_advances',
   ];
 
   /// Per-row sync metadata. Every synced table gets a `uuid` (the cross-device
@@ -894,6 +970,12 @@ class DatabaseHelper {
       'expense_categories',
       'item_categories',
       'item_units',
+      // Employee module (v14): each is merged individually with its own
+      // latest-wins timestamp, so each gets full device_id/is_synced tracking.
+      'employees',
+      'attendance',
+      'salary_payments',
+      'employee_advances',
     ];
     for (final t in tracked) {
       await _addColumnIfMissing(db, t, 'device_id', 'TEXT');
@@ -1588,6 +1670,176 @@ class DatabaseHelper {
   static Future<String> peekReceiptNumber() async {
     final biz = await getBusiness();
     return '$deviceDocPrefix${(biz?['receipt_counter'] as int?) ?? 1}';
+  }
+
+  // ─────────────────────────────────────────
+  // ATOMIC IN-TRANSACTION DOCUMENT NUMBERING
+  // ─────────────────────────────────────────
+  //
+  // The methods above (peek*/consume*/nextReceiptNumber) are now used ONLY for
+  // the read-only preview a form shows before save. The authoritative number is
+  // minted by [mintDocNumberInTxn] *inside* the same DB transaction that inserts
+  // the row, so the read-modify-write of the counter and the insert that uses it
+  // commit together. Two concurrent saves can no longer read the same counter
+  // value (peek-then-consume-later was the source of duplicate INV/PUR/EST/
+  // receipt numbers under "Save & New", rapid taps, and convert-to-sale), and
+  // estimates / challans / returns / orders — which previously derived their
+  // number from a racy `count(*) + 1` and never reserved it — now hold a real
+  // per-prefix counter seeded once from that count.
+
+  /// Fixed prefix for the count-derived document types that have no
+  /// user-configurable prefix. Sale/purchase use [prefixFor] instead.
+  static const Map<String, String> _fixedDocPrefix = {
+    'estimate': 'EST',
+    'delivery_challan': 'DC',
+    'sale_return': 'CN',
+    'purchase_return': 'PR',
+    'purchase_order': 'PO',
+    'sale_order': 'SO',
+  };
+
+  /// Padding width per type (matches the legacy display formats so existing and
+  /// new numbers look identical).
+  static int _padFor(String type) => switch (type) {
+        'purchase_order' => 2,
+        _ => 4,
+      };
+
+  /// Resolves the active prefix for any document [type] using [sql] for the
+  /// monthly-mode / business-row reads so it stays inside the open transaction.
+  static Future<String> _prefixForInTxn(Transaction sql, String type) async {
+    final fixed = _fixedDocPrefix[type];
+    if (fixed != null) return fixed;
+    if (type == 'sale' || type == 'purchase') {
+      final mode = await _getSettingStrInTxn(sql, 'prefix_mode_$type',
+          defaultVal: 'custom');
+      if (mode == 'monthly') return monthlyPrefix();
+      final biz = await sql.query('businesses', where: 'id = 1', limit: 1);
+      final row = biz.isEmpty ? null : biz.first;
+      return type == 'purchase'
+          ? (row?['purchase_prefix'] as String?) ?? 'PUR'
+          : (row?['invoice_prefix'] as String?) ?? 'INV';
+    }
+    return type.toUpperCase();
+  }
+
+  static Future<String> _getSettingStrInTxn(Transaction sql, String key,
+      {String defaultVal = ''}) async {
+    final rows = await sql.query('settings',
+        where: 'business_id = 1 AND key = ?', whereArgs: [key], limit: 1);
+    if (rows.isEmpty) return defaultVal;
+    return rows.first['value'] as String? ?? defaultVal;
+  }
+
+  static Future<void> _setSettingInTxn(
+      Transaction sql, String key, String value) async {
+    await sql.insert('settings', {'business_id': 1, 'key': key, 'value': value},
+        conflictAlgorithm: ConflictAlgorithm.replace);
+  }
+
+  /// First-use seed for a brand-new `counter_<type>_<prefix>` key, computed on
+  /// the transaction handle so it observes uncommitted rows from this same txn.
+  ///
+  /// - sale/purchase seed from the legacy business-row counter column (continues
+  ///   an in-progress sequence), or 1 for a new prefix.
+  /// - count-derived types (estimate/challan/returns/orders) seed from how many
+  ///   such documents already exist + 1, so existing data isn't renumbered.
+  static Future<int> _seedCounterInTxn(
+      Transaction sql, String type, String prefix) async {
+    if (type == 'sale' || type == 'purchase') {
+      final biz = await sql.query('businesses', where: 'id = 1', limit: 1);
+      final row = biz.isEmpty ? null : biz.first;
+      return type == 'purchase'
+          ? (row?['purchase_counter'] as int?) ?? 1
+          : (row?['invoice_counter'] as int?) ?? 1;
+    }
+    // count-derived types: seed past the HIGHEST numeric suffix already in use
+    // for this type (not the row count) so a sparse or partly-deleted history
+    // can't make the seed reissue a number that still exists. We scan every
+    // such row once (first-use only) and take max(trailing integer) + 1. Rows
+    // from the other device carry a `W-` prefix but the same trailing integer
+    // shape, so they're considered too.
+    final rows = await sql.query('transactions',
+        columns: ['transaction_number'],
+        where: 'business_id = 1 AND transaction_type = ?',
+        whereArgs: [type]);
+    var maxN = 0;
+    final trailing = RegExp(r'(\d+)\s*$');
+    for (final r in rows) {
+      final num = r['transaction_number'] as String?;
+      if (num == null) continue;
+      final m = trailing.firstMatch(num);
+      if (m == null) continue;
+      final n = int.tryParse(m.group(1)!) ?? 0;
+      if (n > maxN) maxN = n;
+    }
+    return maxN + 1;
+  }
+
+  /// Formats counter [n] into the full document number for [type] (per-device
+  /// prefix included). Single source of truth for the on-screen shape so the
+  /// preview ([peekDocNumberForType]) and the authoritative mint
+  /// ([mintDocNumberInTxn]) can never drift apart.
+  static String _formatDocNumber(String type, String prefix, int n) {
+    final body = switch (type) {
+      'sale_return' => 'CN $n',
+      'purchase_return' => 'PR-$n',
+      _ => '$prefix-${n.toString().padLeft(_padFor(type), '0')}',
+    };
+    return '$deviceDocPrefix$body';
+  }
+
+  /// The next document number for [type] WITHOUT consuming the counter, for the
+  /// form's read-only preview. Mirrors [mintDocNumberInTxn]'s prefix/seed/format
+  /// exactly so the previewed number matches what will be saved. Works for
+  /// sale, purchase, estimate, challan, returns and orders (not the receipt
+  /// types, which use [peekReceiptNumber]).
+  static Future<String> peekDocNumberForType(String type) async {
+    final db = await database;
+    final prefix = await db.transaction(
+        (sql) async => _prefixForInTxn(sql, type));
+    final key = 'counter_${type}_$prefix';
+    final existing = await getSettingStr(key);
+    final int counter;
+    if (existing.isNotEmpty) {
+      counter = int.tryParse(existing) ?? 1;
+    } else {
+      counter = await db.transaction(
+          (sql) async => _seedCounterInTxn(sql, type, prefix));
+    }
+    return _formatDocNumber(type, prefix, counter);
+  }
+
+  /// Atomically reads, increments, and persists the per-prefix counter for
+  /// [type] on the open transaction [sql], returning the full document number
+  /// (with the per-device `W-` prefix on Windows). MUST be called from inside a
+  /// `db.transaction(...)` block, before the insert that stores the returned
+  /// number, so the counter advance and the insert commit together.
+  ///
+  /// `payment_in` / `payment_out` share the single legacy `receipt_counter`
+  /// column on the business row (Vyapar-style plain receipt numbers: 1, 2, 3…).
+  static Future<String> mintDocNumberInTxn(
+      Transaction sql, String type) async {
+    if (type == 'payment_in' || type == 'payment_out') {
+      final biz = await sql.query('businesses',
+          columns: ['receipt_counter'], where: 'id = 1', limit: 1);
+      final counter =
+          biz.isEmpty ? 1 : (biz.first['receipt_counter'] as int?) ?? 1;
+      await sql.update('businesses', {'receipt_counter': counter + 1},
+          where: 'id = 1');
+      return '$deviceDocPrefix$counter';
+    }
+
+    final prefix = await _prefixForInTxn(sql, type);
+    final key = 'counter_${type}_$prefix';
+    final existing = await _getSettingStrInTxn(sql, key);
+    final counter = existing.isNotEmpty
+        ? (int.tryParse(existing) ?? 1)
+        : await _seedCounterInTxn(sql, type, prefix);
+    await _setSettingInTxn(sql, key, '${counter + 1}');
+    // Sale/purchase format as PREFIX-0001; count-derived types keep their legacy
+    // shapes: "CN 1" (space, no pad), "PR-1" (no pad), "PO-01" / "EST-0001" / etc.
+    return _formatDocNumber(type, prefix, counter);
   }
 
   // ─────────────────────────────────────────

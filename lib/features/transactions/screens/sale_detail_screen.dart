@@ -1,27 +1,17 @@
-import 'dart:io';
-import 'dart:typed_data';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path/path.dart' as p;
-import 'package:path_provider/path_provider.dart';
-import 'package:printing/printing.dart';
-import 'package:share_plus/share_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/database/database_helper.dart';
 import '../../../core/utils/formatters.dart';
-import '../../../services/printer/printer_manager.dart';
-import '../../../services/printer/printer_providers.dart';
 import '../../../services/whatsapp/whatsapp_share_bottom_sheet.dart';
 import '../../parties/repositories/party_repository.dart';
 import '../models/payment.dart';
 import '../models/transaction.dart';
 import '../models/transaction_item.dart';
 import '../providers/transaction_providers.dart';
-import '../services/invoice_pdf_service.dart';
-import '../widgets/print_copies_sheet.dart';
+import '../services/document_actions.dart';
 import '../widgets/payment_bottom_sheet.dart';
 import 'add_edit_transaction_screen.dart';
 import 'add_payment_in_screen.dart';
@@ -109,11 +99,11 @@ class _DetailBody extends StatelessWidget {
           ],
         ),
         const SizedBox(height: 12),
-        if (t.partyName != null)
+        if (t.displayPartyName != null)
           Card(
             child: ListTile(
               leading: const Icon(Icons.person_outline),
-              title: Text(t.partyName!),
+              title: Text(t.displayPartyName!),
               subtitle: Text(isPurchase ? 'Supplier' : 'Customer'),
             ),
           ),
@@ -369,10 +359,10 @@ class _ActionBar extends ConsumerWidget {
   Future<void> _convert(BuildContext context, WidgetRef ref, int sourceId,
       {bool isChallan = false}) async {
     final repo = ref.read(transactionRepositoryProvider);
-    final invoiceNumber = await _nextInvoiceNumber();
+    // The new sale's invoice number is minted atomically inside the conversion.
     final saleId = isChallan
-        ? await repo.convertChallanToSale(sourceId, invoiceNumber)
-        : await repo.convertEstimateToSale(sourceId, invoiceNumber);
+        ? await repo.convertChallanToSale(sourceId)
+        : await repo.convertEstimateToSale(sourceId);
     ref.invalidate(transactionDetailProvider(sourceId));
     ref.refreshTransactions();
     if (!context.mounted) return;
@@ -382,9 +372,6 @@ class _ActionBar extends ConsumerWidget {
       MaterialPageRoute(builder: (_) => SaleDetailScreen(transactionId: saleId)),
     );
   }
-
-  Future<String> _nextInvoiceNumber() =>
-      DatabaseHelper.peekDocNumber('sale');
 }
 
 /// The overflow (⋮) menu shown on every document detail app bar — sale invoice,
@@ -409,8 +396,9 @@ class _Menu extends ConsumerWidget {
 
     final type = t.transactionType;
     final isSale = type == TxnTypes.sale;
-    // Payment-In is a receipt: no Cancel action (matches the design), and it is
-    // never editable via the standard sale/purchase form.
+    // Payment-In/Out is a receipt: no Cancel action (matches the design). It is
+    // editable, but via its own dedicated screen rather than the sale/purchase
+    // form — see the 'edit' case in _handle.
     final isPaymentIn =
         type == TxnTypes.paymentIn || type == TxnTypes.paymentOut;
     // PDF actions apply to every scoped document type shown on this screen.
@@ -487,32 +475,37 @@ class _Menu extends ConsumerWidget {
       case 'duplicate':
         await _duplicate(context, ref);
       case 'open_pdf':
-        await _openPdf(context, challan: false);
+        await DocumentActions.openPdf(context, detail, challan: false);
       case 'print_pdf':
-        await _printPdf(context, challan: false);
+        await DocumentActions.printPdf(context, detail, challan: false);
       case 'print_thermal':
-        await _printThermal(context, ref);
+        await DocumentActions.printThermal(context, ref, detail);
       case 'share_pdf':
-        await _sharePdf(challan: false);
+        await DocumentActions.sharePdf(detail, challan: false);
       case 'whatsapp':
         await _shareWhatsApp(context);
       case 'save_pdf':
-        await _savePdf(context, challan: false);
+        await DocumentActions.savePdf(detail, challan: false);
       case 'open_dc':
-        await _openPdf(context, challan: true);
+        await DocumentActions.openPdf(context, detail, challan: true);
       case 'print_dc':
-        await _printPdf(context, challan: true);
+        await DocumentActions.printPdf(context, detail, challan: true);
       case 'share_dc':
-        await _sharePdf(challan: true);
+        await DocumentActions.sharePdf(detail, challan: true);
       case 'sms':
         await _sendSms(context);
       case 'edit':
+        // Payment-In/Out are created on dedicated screens, so they edit there;
+        // every other document edits via the shared sale/purchase form.
+        final Widget editScreen = switch (t.transactionType) {
+          TxnTypes.paymentIn => AddPaymentInScreen(existingId: t.id),
+          TxnTypes.paymentOut => AddPaymentOutScreen(existingId: t.id),
+          _ => AddEditTransactionScreen(
+              mode: _formMode(t.transactionType), existingId: t.id),
+        };
         final r = await Navigator.push<bool>(
           context,
-          MaterialPageRoute(
-            builder: (_) => AddEditTransactionScreen(
-                mode: _formMode(t.transactionType), existingId: t.id),
-          ),
+          MaterialPageRoute(builder: (_) => editScreen),
         );
         if (r == true) {
           ref.invalidate(transactionDetailProvider(t.id!));
@@ -680,146 +673,5 @@ class _Menu extends ConsumerWidget {
     final party = await PartyRepository().getById(pid);
     final phone = party?.phone?.trim();
     return (phone == null || phone.isEmpty) ? null : phone;
-  }
-
-  // ── PDF plumbing (invoice + delivery challan share the builder) ─────────────
-
-  /// Builds the PDF bytes from the already-loaded detail. When [challan] is true
-  /// it renders the delivery-challan variant (no prices, 'DELIVERY CHALLAN'
-  /// title).
-  Future<Uint8List> _buildPdf({required bool challan}) {
-    final t = detail.transaction;
-    return InvoicePdfService.build(
-      transaction: t,
-      items: detail.items,
-      docTitleOverride: challan ? 'DELIVERY CHALLAN' : null,
-      hidePrices: challan,
-      // A shared / opened / saved sale invoice carries the single Original copy
-      // label (the 3-copy set is print-only).
-      copyLabel: !challan && t.transactionType == TxnTypes.sale
-          ? InvoicePdfService.copyLabels.first
-          : null,
-    );
-  }
-
-  String _fileName({required bool challan}) {
-    final base = detail.transaction.transactionNumber
-        .replaceAll(RegExp(r'[^\w\-]'), '_');
-    return challan ? '${base}_DC.pdf' : '$base.pdf';
-  }
-
-  Future<void> _openPdf(BuildContext context, {required bool challan}) async {
-    final title = challan
-        ? '${detail.transaction.transactionNumber} (Challan)'
-        : detail.transaction.transactionNumber;
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => Scaffold(
-          appBar: AppBar(title: Text(title)),
-          body: PdfPreview(
-            build: (_) => _buildPdf(challan: challan),
-            canChangePageFormat: false,
-            canChangeOrientation: false,
-            pdfFileName: _fileName(challan: challan),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Future<void> _sharePdf({required bool challan}) async {
-    final bytes = await _buildPdf(challan: challan);
-    await Printing.sharePdf(bytes: bytes, filename: _fileName(challan: challan));
-  }
-
-  /// Prints the document. A sale invoice prints as the 3-copy Format 1 set
-  /// after the user picks copies; everything else prints the single-page PDF.
-  /// [context] is required for the copy-selection sheet (sale invoices only).
-  Future<void> _printPdf(BuildContext? context, {required bool challan}) async {
-    final t = detail.transaction;
-    if (!challan && t.transactionType == TxnTypes.sale && context != null) {
-      final labels = await PrintCopiesSheet.show(context);
-      if (labels == null) return; // dismissed
-      if (labels.isEmpty) return;
-      await Printing.layoutPdf(
-        onLayout: (_) => InvoicePdfService.buildAllCopies(
-          transaction: t,
-          items: detail.items,
-          labels: labels,
-        ),
-      );
-      return;
-    }
-    await Printing.layoutPdf(onLayout: (_) => _buildPdf(challan: challan));
-  }
-
-  /// Print to a thermal (ESC/POS) printer. On Windows with thermal disabled,
-  /// [PrinterManager] throws [UsePdfFallback] and we route to the A4 PDF path.
-  Future<void> _printThermal(BuildContext context, WidgetRef ref) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final t = detail.transaction;
-    try {
-      final biz = await DatabaseHelper.getBusiness() ?? <String, dynamic>{};
-      final party = t.partyId != null
-          ? await PartyRepository().getById(t.partyId!)
-          : null;
-      final paymentModeName =
-          detail.payments.isNotEmpty ? detail.payments.first.modeName : null;
-
-      await ref.read(printerManagerProvider).printTransaction(
-            transaction: t,
-            items: detail.items,
-            business: biz,
-            party: party,
-            paymentModeName: paymentModeName,
-          );
-      messenger.showSnackBar(
-          const SnackBar(content: Text('Printed successfully ✓')));
-    } on UsePdfFallback {
-      // Windows, thermal not default → use the existing A4 PDF print.
-      if (!context.mounted) return;
-      await _printPdf(context, challan: false);
-    } on NoDefaultPrinter {
-      if (!context.mounted) return;
-      await _printerError(context,
-          title: 'No printer set up',
-          message: 'Go to Settings → Printer Settings to connect a printer.');
-    } catch (_) {
-      if (!context.mounted) return;
-      await _printerError(context,
-          title: 'Print failed',
-          message: 'Check the printer connection and try again.');
-    }
-  }
-
-  Future<void> _printerError(BuildContext context,
-      {required String title, required String message}) {
-    return showDialog<void>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(ctx), child: const Text('OK')),
-        ],
-      ),
-    );
-  }
-
-  /// Writes the PDF to a temp file and opens the system share/save sheet so the
-  /// user can pick "Save to Files" / Downloads.
-  Future<void> _savePdf(BuildContext context, {required bool challan}) async {
-    final bytes = await _buildPdf(challan: challan);
-    final name = _fileName(challan: challan);
-    final dir = await getTemporaryDirectory();
-    final file = File(p.join(dir.path, name));
-    await file.writeAsBytes(bytes);
-    await SharePlus.instance.share(
-      ShareParams(
-        files: [XFile(file.path)],
-        text: 'Save ${detail.transaction.transactionNumber}',
-      ),
-    );
   }
 }

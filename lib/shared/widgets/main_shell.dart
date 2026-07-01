@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants/app_colors.dart';
 import '../../core/constants/app_strings.dart';
+import '../../core/utils/responsive.dart';
 import '../../core/providers/business_provider.dart';
 import '../../core/providers/notification_provider.dart';
 import '../../features/dashboard/screens/dashboard_screen.dart';
@@ -13,6 +14,7 @@ import '../../features/parties/screens/parties_screen.dart';
 import '../../features/sync/screens/sync_notifications_screen.dart';
 import '../../services/sync/sync_providers.dart';
 import 'app_drawer.dart';
+import 'side_nav_rail.dart';
 
 class MainShell extends ConsumerStatefulWidget {
   const MainShell({super.key});
@@ -116,9 +118,17 @@ class _MainShellState extends ConsumerState<MainShell>
 
   @override
   Widget build(BuildContext context) {
+    final wide = Responsive.isWide(context);
+
+    final body = IndexedStack(index: _selectedIndex, children: _screens);
+
     return Scaffold(
-      drawer: const AppDrawer(),
+      // Wide layout uses a persistent rail, so no hamburger drawer there.
+      drawer: wide ? null : const AppDrawer(),
       appBar: AppBar(
+        // The rail provides navigation on wide windows; suppress the auto
+        // hamburger so no empty leading button shows.
+        automaticallyImplyLeading: !wide,
         title: _searching
             ? TextField(
                 controller: _searchController,
@@ -132,7 +142,23 @@ class _MainShellState extends ConsumerState<MainShell>
                 ),
                 onChanged: _applySearch,
               )
-            : Text(_titleFor(_selectedIndex)),
+            : _selectedIndex == 0
+                ? InkWell(
+                    onTap: () =>
+                        Navigator.pushNamed(context, '/company-setup'),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Flexible(
+                          child: Text(_titleFor(0),
+                              overflow: TextOverflow.ellipsis),
+                        ),
+                        const SizedBox(width: 4),
+                        const Icon(Icons.chevron_right, size: 20),
+                      ],
+                    ),
+                  )
+                : Text(_titleFor(_selectedIndex)),
         actions: [
           if (_selectedIndex == 0) const _SyncBell(),
           if (_selectedIndex == 0) const _NotificationBell(),
@@ -149,10 +175,19 @@ class _MainShellState extends ConsumerState<MainShell>
             ),
         ],
       ),
-      body: IndexedStack(
-        index: _selectedIndex,
-        children: _screens,
-      ),
+      body: wide
+          ? Row(
+              children: [
+                SideNavRail(
+                  selectedIndex: _selectedIndex,
+                  onSelect: _onTabChange,
+                ),
+                VerticalDivider(
+                    width: 1, thickness: 1, color: AppColors.dividerOf(context)),
+                Expanded(child: body),
+              ],
+            )
+          : body,
       floatingActionButton: _showFab
           ? FloatingActionButton(
               backgroundColor: AppColors.primary,
@@ -160,32 +195,35 @@ class _MainShellState extends ConsumerState<MainShell>
               child: const Icon(Icons.add, color: Colors.white),
             )
           : null,
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: _onTabChange,
-        items: const [
-          BottomNavigationBarItem(
-            icon: Icon(Icons.home_outlined),
-            activeIcon: Icon(Icons.home),
-            label: AppStrings.navDashboard,
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.receipt_long_outlined),
-            activeIcon: Icon(Icons.receipt_long),
-            label: AppStrings.navSale,
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.shopping_cart_outlined),
-            activeIcon: Icon(Icons.shopping_cart),
-            label: AppStrings.navPurchase,
-          ),
-          BottomNavigationBarItem(
-            icon: Icon(Icons.people_outline),
-            activeIcon: Icon(Icons.people),
-            label: AppStrings.navParties,
-          ),
-        ],
-      ),
+      // Bottom nav only on narrow windows; the rail replaces it when wide.
+      bottomNavigationBar: wide
+          ? null
+          : BottomNavigationBar(
+              currentIndex: _selectedIndex,
+              onTap: _onTabChange,
+              items: const [
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.home_outlined),
+                  activeIcon: Icon(Icons.home),
+                  label: AppStrings.navDashboard,
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.receipt_long_outlined),
+                  activeIcon: Icon(Icons.receipt_long),
+                  label: AppStrings.navSale,
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.shopping_cart_outlined),
+                  activeIcon: Icon(Icons.shopping_cart),
+                  label: AppStrings.navPurchase,
+                ),
+                BottomNavigationBarItem(
+                  icon: Icon(Icons.people_outline),
+                  activeIcon: Icon(Icons.people),
+                  label: AppStrings.navParties,
+                ),
+              ],
+            ),
     );
   }
 }

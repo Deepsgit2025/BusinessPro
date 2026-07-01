@@ -135,9 +135,11 @@ class SalarySlipPdfService {
                 '${payment.halfDays}  @ ${money(employee.dailyPay / 2)}/day',
                 money(payment.halfDays * employee.dailyPay / 2)),
             _line('Absent days', '${payment.absentDays}', money(0)),
-            if (payment.overtimeHours > 0)
+            // Overtime is a signed net (negative = early-leave deduction).
+            // Show whenever non-zero; a negative amount reads as a deduction.
+            if (payment.overtimeHours != 0)
               _line(
-                  'Overtime',
+                  payment.overtimeHours < 0 ? 'Overtime (early leave)' : 'Overtime',
                   '${_plain(payment.overtimeHours)} hrs @ ${money(employee.overtimeRate)}/hr',
                   money(payment.overtimeAmount)),
             pw.Divider(color: PdfColors.grey300),

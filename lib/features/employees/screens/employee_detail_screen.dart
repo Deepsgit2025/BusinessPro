@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/formatters.dart';
+import '../../../core/utils/responsive.dart';
 import '../models/attendance.dart';
 import '../models/employee.dart';
 import '../models/salary_payment.dart';
@@ -151,33 +152,87 @@ class EmployeeDetailScreen extends ConsumerWidget {
           }
           final att = attAsync.valueOrNull ?? const {};
           final todayKey = DateFormat('yyyy-MM-dd').format(DateTime.now());
+
+          // Shared card instances so the narrow and wide layouts render the
+          // exact same widgets (same callbacks/controllers) — only their
+          // arrangement differs.
+          final summaryCard = _SummaryCard(employee: employee);
+          final advanceCard = _AdvanceCard(
+            employee: employee,
+            onGiveAdvance: () => _giveAdvance(context, ref, employee),
+          );
+          final logTodayStrip = _LogTodayStrip(
+            employeeId: employeeId,
+            attendance: att,
+            onSet: (date, status) => _setDay(ref, date, status),
+            onOvertime: () =>
+                _editOvertime(context, ref, todayKey, att[todayKey]),
+          );
+          final calendarCard = _CalendarCard(
+            month: month,
+            attendance: att,
+            onTapDay: (date, current) => _cycleDay(ref, date, current),
+            onLongPressDay: (date, current) =>
+                _editOvertime(context, ref, date, current),
+          );
+          final salaryHistoryCard = _SalaryHistoryCard(employeeId: employeeId);
+
+          // Wide (desktop): centered, capped width with a two-column dashboard —
+          // info/action blocks on the left, calendar on the right.
+          if (Responsive.isWide(context)) {
+            return SingleChildScrollView(
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 1100),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 20, 24, 24),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          flex: 5,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              summaryCard,
+                              const SizedBox(height: 16),
+                              advanceCard,
+                              const SizedBox(height: 16),
+                              logTodayStrip,
+                              const SizedBox(height: 16),
+                              salaryHistoryCard,
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 20),
+                        Expanded(
+                          flex: 4,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [calendarCard],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            );
+          }
+
+          // Narrow (phone): unchanged single-column list.
           return ListView(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 24),
             children: [
-              _SummaryCard(employee: employee),
+              summaryCard,
               const SizedBox(height: 16),
-              _AdvanceCard(
-                employee: employee,
-                onGiveAdvance: () => _giveAdvance(context, ref, employee),
-              ),
+              advanceCard,
               const SizedBox(height: 16),
-              _LogTodayStrip(
-                employeeId: employeeId,
-                attendance: att,
-                onSet: (date, status) => _setDay(ref, date, status),
-                onOvertime: () =>
-                    _editOvertime(context, ref, todayKey, att[todayKey]),
-              ),
+              logTodayStrip,
               const SizedBox(height: 16),
-              _CalendarCard(
-                month: month,
-                attendance: att,
-                onTapDay: (date, current) => _cycleDay(ref, date, current),
-                onLongPressDay: (date, current) =>
-                    _editOvertime(context, ref, date, current),
-              ),
+              calendarCard,
               const SizedBox(height: 16),
-              _SalaryHistoryCard(employeeId: employeeId),
+              salaryHistoryCard,
             ],
           );
         },
@@ -190,18 +245,34 @@ class EmployeeDetailScreen extends ConsumerWidget {
             : SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.all(12),
-                  child: ElevatedButton(
-                    style: ElevatedButton.styleFrom(
-                      minimumSize: const Size(double.infinity, 48),
-                      backgroundColor: AppColors.primary,
-                    ),
-                    onPressed: () => _openSalary(context, ref, employee, month),
-                    child: const Text(
-                      'Calculate Salary for this Month',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
+                  // On wide screens, cap + center the button to the same width
+                  // as the content above instead of stretching edge-to-edge.
+                  // Align with heightFactor:1 centers horizontally while
+                  // shrink-wrapping vertically — a plain Center would expand to
+                  // fill the bottom bar's unbounded height and swallow the body.
+                  child: Align(
+                    alignment: Alignment.center,
+                    heightFactor: 1,
+                    child: ConstrainedBox(
+                      constraints: BoxConstraints(
+                        maxWidth:
+                            Responsive.isWide(context) ? 1100 : double.infinity,
+                      ),
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          minimumSize: const Size(double.infinity, 48),
+                          backgroundColor: AppColors.primary,
+                        ),
+                        onPressed: () =>
+                            _openSalary(context, ref, employee, month),
+                        child: const Text(
+                          'Calculate Salary for this Month',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 16,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
                       ),
                     ),
                   ),
@@ -731,6 +802,10 @@ class _StatusButton extends StatelessWidget {
 
 /// Tappable month calendar. Each cell cycles present → half → absent → clear.
 class _CalendarCard extends StatelessWidget {
+  /// Largest a single day cell may grow to (px). Keeps the month compact on
+  /// wide screens; below this width cells stay square as on a phone.
+  static const double _maxCellSize = 52;
+
   final DateTime month;
   final Map<String, Attendance> attendance;
   final void Function(String date, Attendance? current) onTapDay;
@@ -790,31 +865,49 @@ class _CalendarCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          GridView.count(
-            crossAxisCount: 7,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 6,
-            crossAxisSpacing: 6,
-            children: [
-              for (var i = 0; i < leadingBlanks; i++) const SizedBox.shrink(),
-              for (var day = 1; day <= daysInMonth; day++)
-                _DayCell(
-                  day: day,
-                  date: DateTime(month.year, month.month, day),
-                  attendance: attendance[
-                      '${month.year.toString().padLeft(4, '0')}-'
-                      '${month.month.toString().padLeft(2, '0')}-'
-                      '${day.toString().padLeft(2, '0')}'],
-                  isToday: today.year == month.year &&
-                      today.month == month.month &&
-                      today.day == day,
-                  isFuture: DateTime(month.year, month.month, day)
-                      .isAfter(DateTime(today.year, today.month, today.day)),
-                  onTap: onTapDay,
-                  onLongPress: onLongPressDay,
-                ),
-            ],
+          // On narrow screens cells stay square (childAspectRatio 1.0), exactly
+          // as before. On wide screens a square grid would blow each cell up to
+          // (cardWidth / 7) ≈ 200px+, so cap the cell *width* at [_maxCellSize]
+          // by widening the aspect ratio — keeping the 7-column grid and every
+          // cell's look (colors, today border, ⭐) untouched.
+          LayoutBuilder(
+            builder: (context, constraints) {
+              const spacing = 6.0;
+              final cellWidth =
+                  (constraints.maxWidth - spacing * 6) / 7; // 7 cols, 6 gaps
+              // Square unless the cell would exceed the cap; then make it wider
+              // than tall so its rendered width lands at [_maxCellSize].
+              final aspectRatio =
+                  cellWidth > _maxCellSize ? cellWidth / _maxCellSize : 1.0;
+              return GridView.count(
+                crossAxisCount: 7,
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                mainAxisSpacing: spacing,
+                crossAxisSpacing: spacing,
+                childAspectRatio: aspectRatio,
+                children: [
+                  for (var i = 0; i < leadingBlanks; i++)
+                    const SizedBox.shrink(),
+                  for (var day = 1; day <= daysInMonth; day++)
+                    _DayCell(
+                      day: day,
+                      date: DateTime(month.year, month.month, day),
+                      attendance: attendance[
+                          '${month.year.toString().padLeft(4, '0')}-'
+                          '${month.month.toString().padLeft(2, '0')}-'
+                          '${day.toString().padLeft(2, '0')}'],
+                      isToday: today.year == month.year &&
+                          today.month == month.month &&
+                          today.day == day,
+                      isFuture: DateTime(month.year, month.month, day).isAfter(
+                          DateTime(today.year, today.month, today.day)),
+                      onTap: onTapDay,
+                      onLongPress: onLongPressDay,
+                    ),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 14),
           Wrap(

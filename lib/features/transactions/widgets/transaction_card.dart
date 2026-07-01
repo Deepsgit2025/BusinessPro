@@ -3,18 +3,28 @@ import 'package:flutter/material.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/formatters.dart';
 import '../models/transaction.dart';
+import '../services/document_actions.dart';
 
 /// A single transaction row on a list screen (sale / purchase / estimate).
+///
+/// When [onPrint] / [onShare] are supplied AND the document type has a PDF
+/// representation, a thin Print / Share action row is shown at the bottom of the
+/// card. Cards left without those callbacks (or for cash rows like
+/// expense / income, which have no PDF) render exactly as before.
 class TransactionCard extends StatelessWidget {
   final Transaction txn;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
+  final VoidCallback? onPrint;
+  final VoidCallback? onShare;
 
   const TransactionCard({
     super.key,
     required this.txn,
     required this.onTap,
     this.onLongPress,
+    this.onPrint,
+    this.onShare,
   });
 
   @override
@@ -30,6 +40,11 @@ class TransactionCard extends StatelessWidget {
       TxnTypes.purchaseOrder,
     }.contains(txn.transactionType);
 
+    // Show the inline Print / Share actions only when the caller wired them up
+    // and the document actually has a PDF (cash rows don't).
+    final showActions = (onPrint != null || onShare != null) &&
+        DocumentActions.canPdf(txn.transactionType);
+
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
       child: InkWell(
@@ -38,68 +53,74 @@ class TransactionCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(16),
         child: Padding(
           padding: const EdgeInsets.all(14),
-          child: Row(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+              Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Flexible(
-                          child: Text(
-                            txn.transactionNumber,
-                            style: TextStyle(
-                              fontWeight: FontWeight.bold,
-                              fontSize: 14,
-                              decoration:
-                                  cancelled ? TextDecoration.lineThrough : null,
-                              color: cancelled ? AppColors.textHint : null,
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                txn.transactionNumber,
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 14,
+                                  decoration: cancelled
+                                      ? TextDecoration.lineThrough
+                                      : null,
+                                  color: cancelled ? AppColors.textHint : null,
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                              ),
                             ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
+                            const SizedBox(width: 6),
+                            if (typeTag != null) _Tag(typeTag.$1, typeTag.$2),
+                            if (cancelled) _Tag('Cancelled', AppColors.expense),
+                          ],
                         ),
-                        const SizedBox(width: 6),
-                        if (typeTag != null) _Tag(typeTag.$1, typeTag.$2),
-                        if (cancelled) _Tag('Cancelled', AppColors.expense),
+                        const SizedBox(height: 3),
+                        Text(
+                          txn.displayPartyName ?? 'Walk-in / Cash',
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 13),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          Formatters.date(txn.transactionDate),
+                          style: const TextStyle(
+                              color: AppColors.textHint, fontSize: 11),
+                        ),
                       ],
                     ),
-                    const SizedBox(height: 3),
-                    Text(
-                      txn.partyName?.trim().isNotEmpty == true
-                          ? txn.partyName!
-                          : 'Walk-in / Cash',
-                      style: const TextStyle(
-                          color: AppColors.textSecondary, fontSize: 13),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      Formatters.date(txn.transactionDate),
-                      style: const TextStyle(color: AppColors.textHint, fontSize: 11),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 8),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    Formatters.currency(txn.totalAmount),
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 15),
                   ),
-                  const SizedBox(height: 4),
-                  if (!showsDocStatus) _StatusBadge(txn),
-                  if (showsDocStatus)
-                    Text(
-                      _docStatusLabel(txn.status),
-                      style: const TextStyle(
-                          color: AppColors.textSecondary, fontSize: 11),
-                    ),
+                  const SizedBox(width: 8),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      Text(
+                        Formatters.currency(txn.totalAmount),
+                        style: const TextStyle(
+                            fontWeight: FontWeight.bold, fontSize: 15),
+                      ),
+                      const SizedBox(height: 4),
+                      if (!showsDocStatus) _StatusBadge(txn),
+                      if (showsDocStatus)
+                        Text(
+                          _docStatusLabel(txn.status),
+                          style: const TextStyle(
+                              color: AppColors.textSecondary, fontSize: 11),
+                        ),
+                    ],
+                  ),
                 ],
               ),
+              if (showActions) _CardActions(onPrint: onPrint, onShare: onShare),
             ],
           ),
         ),
@@ -127,6 +148,70 @@ class TransactionCard extends StatelessWidget {
         TxnTypes.purchase => ('Purchase', AppColors.primary),
         _ => null,
       };
+}
+
+/// The thin Print / Share action strip shown at the bottom of a card. Sits
+/// under a hairline divider so it reads as a footer, not part of the body.
+class _CardActions extends StatelessWidget {
+  final VoidCallback? onPrint;
+  final VoidCallback? onShare;
+  const _CardActions({this.onPrint, this.onShare});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        const Padding(
+          padding: EdgeInsets.only(top: 8, bottom: 2),
+          child: Divider(height: 1),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.end,
+          children: [
+            if (onPrint != null)
+              _ActionButton(
+                icon: Icons.print_outlined,
+                label: 'Print',
+                onTap: onPrint!,
+              ),
+            if (onShare != null)
+              _ActionButton(
+                icon: Icons.share_outlined,
+                label: 'Share',
+                onTap: onShare!,
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _ActionButton extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _ActionButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return TextButton.icon(
+      onPressed: onTap,
+      icon: Icon(icon, size: 18),
+      label: Text(label, style: const TextStyle(fontSize: 12)),
+      style: TextButton.styleFrom(
+        foregroundColor: AppColors.primary,
+        visualDensity: VisualDensity.compact,
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 0),
+        minimumSize: const Size(0, 32),
+        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+      ),
+    );
+  }
 }
 
 /// Payment-status badge with balance-due colour coding.

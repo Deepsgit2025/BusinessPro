@@ -4,7 +4,8 @@
       "Bash(sed -i 's/error: \\(_, __\\)/error: \\(_, _\\)/g' lib/features/transactions/screens/add_edit_cash_txn_screen.dart lib/features/transactions/screens/add_edit_transaction_screen.dart)",
       "Bash(sed -i 's/separatorBuilder: \\(_, __\\)/separatorBuilder: \\(_, _\\)/g' lib/features/transactions/widgets/party_picker.dart)",
       "Bash(flutter analyze *)",
-      "PowerShell(flutter test test/doc_numbering_test.dart 2>&1)"
+      "PowerShell(flutter test test/doc_numbering_test.dart 2>&1)",
+      "Bash(flutter run *)"
     ]
   }
 }

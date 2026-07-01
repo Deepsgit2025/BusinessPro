@@ -48,3 +48,8 @@ app.*.map.json
 _*.txt
 _*.log
 _*.png
+build_*.txt
+BusinessPro-Windows.zip
+
+# Android build output (Gradle) — not covered by the Flutter /build/ rule
+/android/build/

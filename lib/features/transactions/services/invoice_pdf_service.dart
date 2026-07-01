@@ -283,8 +283,10 @@ class InvoicePdfService {
       if (!hidePrices && s.amountInWordsFormat.isNotEmpty)
         _amountInWords(transaction.totalAmount, isEstimate: isEstimate),
       // HSN/SAC tax breakup table (sale invoices Format 1, and estimates).
-      if ((isSale || isEstimate) && s.showTaxDetails)
+      if ((isSale || isEstimate) && s.showTaxDetails) ...[
+        pw.SizedBox(height: 10),
         _hsnTaxTable(items, transaction, money),
+      ],
       pw.SizedBox(height: 16),
       // Delivery challans (hidePrices) suppress the bank/QR payment block.
       // Estimates keep it (Format 2 shows QR + bank on the left), so only
@@ -324,24 +326,25 @@ class InvoicePdfService {
 
     return [
       // ── Title row ──────────────────────────────────────────────────────
-      pw.Row(
-        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-        crossAxisAlignment: pw.CrossAxisAlignment.start,
-        children: [
-          pw.Text('Tax Invoice',
-              style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
-          pw.Text(copyLabel,
-              style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
-        ],
+      // Copy label right-aligned on its own line, then the title centered.
+      pw.Align(
+        alignment: pw.Alignment.centerRight,
+        child: pw.Text(copyLabel,
+            style: const pw.TextStyle(fontSize: 8, color: PdfColors.grey700)),
+      ),
+      pw.Center(
+        child: pw.Text('Tax Invoice',
+            style: pw.TextStyle(fontSize: 14, fontWeight: pw.FontWeight.bold)),
       ),
       pw.SizedBox(height: 6),
 
       // ── Header: business (left) + invoice meta grid (right) ────────────
+      // Equal-width columns so both boxes align symmetrically.
       pw.Table(
         border: pw.TableBorder.all(color: PdfColors.grey600, width: 0.5),
         columnWidths: const {
-          0: pw.FlexColumnWidth(4),
-          1: pw.FlexColumnWidth(5),
+          0: pw.FlexColumnWidth(1),
+          1: pw.FlexColumnWidth(1),
         },
         children: [
           pw.TableRow(children: [
@@ -392,8 +395,8 @@ class InvoicePdfService {
       pw.Table(
         border: pw.TableBorder.all(color: PdfColors.grey600, width: 0.5),
         columnWidths: const {
-          0: pw.FlexColumnWidth(5),
-          1: pw.FlexColumnWidth(4),
+          0: pw.FlexColumnWidth(1),
+          1: pw.FlexColumnWidth(1),
         },
         children: [
           pw.TableRow(children: [
@@ -421,13 +424,12 @@ class InvoicePdfService {
       ),
 
       // ── HSN/SAC tax breakup (reused) ───────────────────────────────────
-      if (s.showTaxDetails && t.taxAmount > 0) ...[
-        pw.SizedBox(height: 8),
+      // No gap above/below: the tax table sits flush so the whole invoice
+      // reads as one continuous bordered bill.
+      if (s.showTaxDetails && t.taxAmount > 0)
         _hsnTaxTable(items, t, money),
-      ],
 
       // ── Footer: bank / QR-or-Terms / signature ─────────────────────────
-      pw.SizedBox(height: 8),
       _format1Footer(biz, t, signature, s),
 
       // ── Powered by ─────────────────────────────────────────────────────
@@ -446,17 +448,11 @@ class InvoicePdfService {
     final cityState = [line('city'), line('state'), line('pincode')]
         .where((e) => e.isNotEmpty)
         .join(', ');
-    return pw.Column(
+    // Business details column (name/address/contact/GSTIN), sat to the RIGHT
+    // of the logo by the enclosing Row below.
+    final details = pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
-        if (s.printLogo && logo != null) ...[
-          pw.Container(
-              height: 44,
-              constraints: const pw.BoxConstraints(maxWidth: 120),
-              child: pw.Image(logo,
-                  fit: pw.BoxFit.contain, alignment: pw.Alignment.centerLeft)),
-          pw.SizedBox(height: 4),
-        ],
         pw.Text(name,
             style: pw.TextStyle(fontSize: 12, fontWeight: pw.FontWeight.bold)),
         if (s.printAddress && line('address_line1').isNotEmpty)
@@ -477,6 +473,27 @@ class InvoicePdfService {
         if (line('state').isNotEmpty)
           pw.Text('State: ${line('state')}',
               style: const pw.TextStyle(fontSize: 8)),
+      ],
+    );
+    // Logo on the left, details to its right. When no logo is shown the details
+    // expand to fill the cell as before.
+    return pw.Row(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        if (s.printLogo && logo != null) ...[
+          pw.Padding(
+            // Nudge the logo down so it sits centered against the business
+            // text rather than pinned to the top corner.
+            padding: const pw.EdgeInsets.only(top: 15),
+            child: pw.Container(
+                height: 44,
+                width: 60,
+                child: pw.Image(logo,
+                    fit: pw.BoxFit.contain, alignment: pw.Alignment.center)),
+          ),
+          pw.SizedBox(width: 8),
+        ],
+        pw.Expanded(child: details),
       ],
     );
   }
@@ -502,6 +519,8 @@ class InvoicePdfService {
     ];
     // Render as a nested 2-column Table so it sizes to content inside the outer
     // header table cell (pw.Expanded would resolve to infinite height here).
+    // All eight boxes always render (even when empty) so the grid stays a full
+    // 4×2 — Place of Supply / Transport / Vehicle / etc. keep their slots.
     pw.Widget cell((String, String) c) => pw.Padding(
           padding: const pw.EdgeInsets.all(4),
           child: pw.Column(
@@ -513,8 +532,15 @@ class InvoicePdfService {
     for (var i = 0; i < cells.length; i += 2) {
       tableRows.add(pw.TableRow(children: [cell(cells[i]), cell(cells[i + 1])]));
     }
+    // Internal dividers only (no outer box): the outer header table already
+    // frames this cell. Drawing a full border here added a stray bottom line
+    // below the last row when the cell stretched taller than the grid content.
     return pw.Table(
-      border: pw.TableBorder.all(color: PdfColors.grey600, width: 0.5),
+      border: const pw.TableBorder(
+        horizontalInside:
+            pw.BorderSide(color: PdfColors.grey600, width: 0.5),
+        verticalInside: pw.BorderSide(color: PdfColors.grey600, width: 0.5),
+      ),
       columnWidths: const {
         0: pw.FlexColumnWidth(1),
         1: pw.FlexColumnWidth(1),
@@ -524,16 +550,24 @@ class InvoicePdfService {
   }
 
   static pw.Widget _format1BillTo(dynamic party, Transaction t, PrintSettings s) {
-    final name = (party?.name as String?) ?? t.partyName ?? '';
-    final addr = (party?.billingAddress as String?)?.trim() ?? '';
+    final name = (party?.name as String?) ?? t.displayPartyName ?? '';
+    // Fall back to the document's one-off billing address/GSTIN when no party
+    // is linked (typed directly on the invoice).
+    final addr = ((party?.billingAddress as String?)?.trim().isNotEmpty ?? false)
+        ? (party!.billingAddress as String).trim()
+        : (t.billingAddress?.trim() ?? '');
     final cityState = [
       (party?.billingCity as String?)?.trim(),
       (party?.billingState as String?)?.trim(),
       (party?.billingPincode as String?)?.trim(),
     ].where((e) => e != null && e.isNotEmpty).join(', ');
     final phone = (party?.phone as String?)?.trim() ?? '';
-    final gstin =
-        s.printGstin ? ((party?.gstin as String?)?.trim() ?? '') : '';
+    final partyGstin = (party?.gstin as String?)?.trim();
+    final gstin = s.printGstin
+        ? ((partyGstin != null && partyGstin.isNotEmpty)
+            ? partyGstin
+            : (t.billingGstin?.trim() ?? ''))
+        : '';
     return pw.Column(
       crossAxisAlignment: pw.CrossAxisAlignment.start,
       children: [
@@ -599,20 +633,28 @@ class InvoicePdfService {
       c('Item Name', style: headStyle),
       if (s.showHsn) c('HSN/SAC', style: headStyle),
       c('Qty', style: headStyle, align: pw.Alignment.centerRight),
+      c('Unit', style: headStyle),
       c('Price/Unit', style: headStyle, align: pw.Alignment.centerRight),
       if (anyTax) c('GST', style: headStyle, align: pw.Alignment.centerRight),
       c('Amount', style: headStyle, align: pw.Alignment.centerRight),
     ];
 
+    // Column widths split the table into two equal halves so the Qty|Unit
+    // boundary sits exactly on the 50% midline — aligning with the vertical
+    // lines that split Bill To|Ship To above and amount-in-words|breakup below.
+    // Left group (#, Item, HSN, Qty) = 0.6+5.2+1.6+1.6 = 9.0; right group
+    // (Unit, Price, GST, Amount) = 1.6+2.6+2.6+2.2 = 9.0. Item Name carries the
+    // slack. Conditional columns (#/HSN/GST) just drop out without unbalancing.
     final colWidths = <int, pw.TableColumnWidth>{};
     var ci = 0;
-    if (s.showSNo) colWidths[ci++] = const pw.FixedColumnWidth(20);
-    colWidths[ci++] = const pw.FlexColumnWidth(4);
+    if (s.showSNo) colWidths[ci++] = const pw.FlexColumnWidth(0.6);
+    colWidths[ci++] = const pw.FlexColumnWidth(5.2);
     if (s.showHsn) colWidths[ci++] = const pw.FlexColumnWidth(1.6);
-    colWidths[ci++] = const pw.FlexColumnWidth(1.2);
-    colWidths[ci++] = const pw.FlexColumnWidth(1.8);
-    if (anyTax) colWidths[ci++] = const pw.FlexColumnWidth(1.3);
-    colWidths[ci] = const pw.FlexColumnWidth(1.8);
+    colWidths[ci++] = const pw.FlexColumnWidth(1.6);
+    colWidths[ci++] = const pw.FlexColumnWidth(1.6);
+    colWidths[ci++] = const pw.FlexColumnWidth(2.6);
+    if (anyTax) colWidths[ci++] = const pw.FlexColumnWidth(2.6);
+    colWidths[ci] = const pw.FlexColumnWidth(2.2);
 
     final rows = <pw.TableRow>[
       pw.TableRow(
@@ -627,11 +669,35 @@ class InvoicePdfService {
         c(it.itemName),
         if (s.showHsn) c(it.itemHsn ?? ''),
         c(_qty(it.quantity, null), align: pw.Alignment.centerRight),
+        c(it.unitName ?? ''),
         c(money(it.unitPrice), align: pw.Alignment.centerRight),
         if (anyTax)
-          c(it.taxAmount > 0 ? '${_pct(it.taxRate)}%' : '-',
+          c(it.taxAmount > 0
+              ? '${money(it.taxAmount)} (${_pct(it.taxRate)}%)'
+              : '-',
               align: pw.Alignment.centerRight),
         c(money(it.totalAmount), align: pw.Alignment.centerRight),
+      ]));
+    }
+    // Fill the remaining vertical space with a SINGLE tall empty row (not many
+    // short ones) so there are no horizontal dividers in the blank area — just
+    // the column verticals continue down, matching a professional invoice. The
+    // height shrinks as item count grows, and collapses to zero once the items
+    // already fill ~10 lines.
+    const minRows = 10;
+    final padLines = minRows - items.length;
+    if (padLines > 0) {
+      final fillHeight = padLines * 16.0;
+      pw.Widget blank() => pw.Container(height: fillHeight);
+      rows.add(pw.TableRow(children: [
+        if (s.showSNo) blank(),
+        blank(),
+        if (s.showHsn) blank(),
+        blank(),
+        blank(),
+        blank(),
+        if (anyTax) blank(),
+        blank(),
       ]));
     }
     // Total row.
@@ -647,7 +713,8 @@ class InvoicePdfService {
         c(_qty(totalQty, null),
             align: pw.Alignment.centerRight,
             style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
-        c(''),
+        c(''), // Unit
+        c(''), // Price/Unit
         if (anyTax) c(''),
         c(money(grand),
             align: pw.Alignment.centerRight,
@@ -1394,7 +1461,11 @@ class InvoicePdfService {
 
     final headStyle = pw.TextStyle(
         fontSize: 8, fontWeight: pw.FontWeight.bold, color: PdfColors.white);
+    final boldS = pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold);
     const cellStyle = pw.TextStyle(fontSize: 8);
+    const headColor = PdfColors.blue800;
+    const headBorder = pw.BorderSide(color: PdfColors.white, width: 0.5);
+
     pw.Widget c(String txt,
             {pw.TextStyle style = cellStyle,
             pw.Alignment align = pw.Alignment.centerRight}) =>
@@ -1404,72 +1475,152 @@ class InvoicePdfService {
           child: pw.Text(txt, style: style),
         );
 
-    final headers = <pw.Widget>[
-      c('HSN/SAC', style: headStyle, align: pw.Alignment.centerLeft),
-      c('Taxable', style: headStyle),
-      c('Rate', style: headStyle),
-      if (interState)
-        c('IGST', style: headStyle)
-      else ...[
-        c('CGST', style: headStyle),
-        c('SGST', style: headStyle),
+    // A header cell that spans the full height of the two-row header band: the
+    // label is vertically centered, no sub-columns (HSN/SAC, Taxable, Total).
+    pw.Widget headSpan(String txt, {pw.Alignment align = pw.Alignment.center}) =>
+        pw.Container(
+          alignment: align,
+          padding: const pw.EdgeInsets.symmetric(horizontal: 4, vertical: 3),
+          child: pw.Text(txt, style: headStyle),
+        );
+
+    // A grouped header ("CGST"/"SGST"/"IGST") spanning two sub-columns
+    // (Rate | Amount). Built as a nested 2-row table whose second row is itself
+    // a 2-column table — no Row/Expanded, which would crash with unbounded
+    // width inside a Table cell.
+    pw.Widget headCenter(String txt) => pw.Container(
+          alignment: pw.Alignment.center,
+          padding: const pw.EdgeInsets.symmetric(vertical: 2),
+          child: pw.Text(txt, style: headStyle),
+        );
+    pw.Widget headGroup(String title) => pw.Table(
+          border: const pw.TableBorder(horizontalInside: headBorder),
+          children: [
+            pw.TableRow(children: [
+              pw.Container(
+                alignment: pw.Alignment.center,
+                padding: const pw.EdgeInsets.symmetric(vertical: 3),
+                child: pw.Text(title, style: headStyle),
+              ),
+            ]),
+            pw.TableRow(children: [
+              pw.Table(
+                border: const pw.TableBorder(verticalInside: headBorder),
+                columnWidths: const {
+                  0: pw.FlexColumnWidth(1),
+                  1: pw.FlexColumnWidth(1.6),
+                },
+                children: [
+                  pw.TableRow(children: [
+                    headCenter('Rate'),
+                    headCenter('Amount'),
+                  ]),
+                ],
+              ),
+            ]),
+          ],
+        );
+
+    // ── Leaf columns ───────────────────────────────────────────────────────
+    // Intra-state: HSN | Taxable | CGST-Rate | CGST-Amt | SGST-Rate | SGST-Amt | Total
+    // Inter-state: HSN | Taxable | IGST-Rate | IGST-Amt | Total
+    final colWidths = <int, pw.TableColumnWidth>{
+      0: const pw.FlexColumnWidth(2.2), // HSN/SAC
+      1: const pw.FlexColumnWidth(2.6), // Taxable
+    };
+    if (interState) {
+      colWidths[2] = const pw.FlexColumnWidth(1.2); // IGST Rate
+      colWidths[3] = const pw.FlexColumnWidth(2.2); // IGST Amount
+      colWidths[4] = const pw.FlexColumnWidth(2.4); // Total Tax
+    } else {
+      colWidths[2] = const pw.FlexColumnWidth(1.2); // CGST Rate
+      colWidths[3] = const pw.FlexColumnWidth(2.0); // CGST Amount
+      colWidths[4] = const pw.FlexColumnWidth(1.2); // SGST Rate
+      colWidths[5] = const pw.FlexColumnWidth(2.0); // SGST Amount
+      colWidths[6] = const pw.FlexColumnWidth(2.4); // Total Tax
+    }
+
+    // ── Two-row grouped header, rendered as one TableRow whose cells are the
+    // spanning widgets above; each group widget internally splits into its two
+    // leaf sub-columns. To keep leaf columns aligned with the data rows, the
+    // header is a SEPARATE table laid over the same column widths.
+    final headerTable = pw.Table(
+      columnWidths: {
+        0: colWidths[0]!,
+        1: colWidths[1]!,
+        2: interState
+            ? const pw.FlexColumnWidth(3.4) // IGST group (rate+amt)
+            : const pw.FlexColumnWidth(3.2), // CGST group
+        if (!interState) 3: const pw.FlexColumnWidth(3.2), // SGST group
+        (interState ? 3 : 4): const pw.FlexColumnWidth(2.4), // Total Tax
+      },
+      border: pw.TableBorder.all(color: PdfColors.white, width: 0.5),
+      children: [
+        pw.TableRow(
+          decoration: const pw.BoxDecoration(color: headColor),
+          children: [
+            headSpan('HSN/SAC', align: pw.Alignment.centerLeft),
+            headSpan('Taxable\nAmount'),
+            if (interState)
+              headGroup('IGST')
+            else ...[
+              headGroup('CGST'),
+              headGroup('SGST'),
+            ],
+            headSpan('Total Tax\nAmount'),
+          ],
+        ),
       ],
-      c('Total Tax', style: headStyle),
-    ];
+    );
 
-    final rows = <pw.TableRow>[
-      pw.TableRow(
-        decoration: const pw.BoxDecoration(color: PdfColors.blue800),
-        children: headers,
-      ),
-    ];
-
+    // ── Data + total rows (leaf columns) ─────────────────────────────────────
+    final dataRows = <pw.TableRow>[];
     byHsn.forEach((hsn, v) {
-      rows.add(pw.TableRow(children: [
+      // CGST/SGST rate is half the line's GST rate (e.g. 5% → 2.5% each).
+      final halfRate = '${_pct(v.rate / 2)}%';
+      dataRows.add(pw.TableRow(children: [
         c(hsn, align: pw.Alignment.centerLeft),
         c(money(v.taxable)),
-        c('${_pct(v.rate)}%'),
-        if (interState)
-          c(money(v.igst))
-        else ...[
+        if (interState) ...[
+          c('${_pct(v.rate)}%'),
+          c(money(v.igst)),
+        ] else ...[
+          c(halfRate),
           c(money(v.cgst)),
+          c(halfRate),
           c(money(v.sgst)),
         ],
         c(money(v.tax)),
       ]));
     });
 
-    // Totals row.
-    rows.add(pw.TableRow(
+    dataRows.add(pw.TableRow(
       decoration: const pw.BoxDecoration(color: PdfColors.grey100),
       children: [
-        c('Total',
-            style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold),
-            align: pw.Alignment.centerLeft),
-        c(money(t.taxableAmount),
-            style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
-        c(''),
-        if (interState)
-          c(money(t.igstAmount),
-              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold))
-        else ...[
-          c(money(t.cgstAmount),
-              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
-          c(money(t.sgstAmount),
-              style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
+        c('Total', style: boldS, align: pw.Alignment.centerLeft),
+        c(money(t.taxableAmount), style: boldS),
+        if (interState) ...[
+          c(''),
+          c(money(t.igstAmount), style: boldS),
+        ] else ...[
+          c(''),
+          c(money(t.cgstAmount), style: boldS),
+          c(''),
+          c(money(t.sgstAmount), style: boldS),
         ],
-        c(money(t.taxAmount),
-            style: pw.TextStyle(fontSize: 8, fontWeight: pw.FontWeight.bold)),
+        c(money(t.taxAmount), style: boldS),
       ],
     ));
 
-    return pw.Container(
-      margin: const pw.EdgeInsets.only(top: 10),
-      child: pw.Table(
-        border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
-        children: rows,
-      ),
+    final bodyTable = pw.Table(
+      columnWidths: colWidths,
+      border: pw.TableBorder.all(color: PdfColors.grey300, width: 0.5),
+      children: dataRows,
     );
+
+    // No outer margin: callers control the spacing above the table (Format 1
+    // wants it flush; the borderless/Format 2 layouts add their own SizedBox).
+    return pw.Column(children: [headerTable, bodyTable]);
   }
 
   // ── Bill-to party ─────────────────────────────────────────────────────────
@@ -1486,18 +1637,25 @@ class InvoicePdfService {
     final heading =
         isEstimate ? 'Estimate For' : (isPurchase ? 'Bill From' : 'Bill To');
 
-    final name = party?.name as String? ?? t.partyName ?? '';
+    final name = party?.name as String? ?? t.displayPartyName ?? '';
+    final partyAddr = (party?.billingAddress as String?)?.trim();
     final addr = <String>[
-      if ((party?.billingAddress as String?)?.trim().isNotEmpty ?? false)
-        (party!.billingAddress as String).trim(),
+      if (partyAddr != null && partyAddr.isNotEmpty)
+        partyAddr
+      else if ((t.billingAddress?.trim() ?? '').isNotEmpty)
+        t.billingAddress!.trim(),
       [
         (party?.billingCity as String?)?.trim(),
         (party?.billingState as String?)?.trim(),
         (party?.billingPincode as String?)?.trim(),
       ].where((s) => s != null && s.isNotEmpty).join(', '),
     ].where((s) => s.trim().isNotEmpty).toList();
-    final partyGstin =
-        s.printGstin ? ((party?.gstin as String?)?.trim() ?? '') : '';
+    final partyGstinRaw = (party?.gstin as String?)?.trim();
+    final partyGstin = s.printGstin
+        ? ((partyGstinRaw != null && partyGstinRaw.isNotEmpty)
+            ? partyGstinRaw
+            : (t.billingGstin?.trim() ?? ''))
+        : '';
     final partyPhone = (party?.phone as String?)?.trim() ?? '';
 
     return pw.Container(

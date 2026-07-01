@@ -52,11 +52,11 @@ class BusinessProApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    // The theme is loaded from the DB once inside ThemeNotifier.build(); we only
+    // watch it here. (Do NOT kick off a load from this build method — watching
+    // the provider while mutating it on every frame caused an infinite
+    // rebuild loop that blinked the whole app.)
     final themeMode = ref.watch(themeProvider);
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(themeProvider.notifier).loadFromDb();
-    });
 
     return MaterialApp(
       title: AppStrings.appName,

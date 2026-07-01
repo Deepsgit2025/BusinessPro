@@ -247,6 +247,47 @@ class _ItemLineWidgetState extends State<ItemLineWidget> {
               Expanded(child: _taxDropdown(d)),
             ],
           ),
+          // Tax-inclusive toggle: when on, the entered price already contains
+          // the tax and the system extracts it (TxnCalc.lineTax inclusive path)
+          // rather than adding it on top. Lets the user just type the final
+          // selling price. Hidden when the line has no tax rate (nothing to
+          // extract).
+          if (d.taxRate > 0) _taxInclusiveToggle(d),
+        ],
+      ),
+    );
+  }
+
+  Widget _taxInclusiveToggle(LineDraft d) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              'Price includes tax',
+              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+            ),
+          ),
+          Text(
+            d.taxInclusive ? 'Incl.' : 'Excl.',
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: d.taxInclusive
+                  ? AppColors.primary
+                  : AppColors.textSecondary,
+            ),
+          ),
+          Switch(
+            value: d.taxInclusive,
+            activeThumbColor: AppColors.primary,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            onChanged: (v) {
+              setState(() => d.taxInclusive = v);
+              _recalc();
+            },
+          ),
         ],
       ),
     );

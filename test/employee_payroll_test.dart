@@ -113,6 +113,65 @@ void main() {
     expect(ledger.length, 2);
   });
 
+  test('signed overtime nets across the month (early-leave deducts)', () async {
+    // Early-leave is logged as a negative overtime adjustment; at month-end the
+    // signed hours net, so a -1.0h early-leave cancels part of a +2.0h overtime.
+    final id = await repo.insert(
+      const Employee(name: 'Nita', dailyPay: 500, overtimeRate: 100),
+    );
+    await repo.setAttendance(id, day(1), AttendanceStatus.present,
+        overtimeHours: 2.0); // worked 2h overtime
+    await repo.setAttendance(id, day(2), AttendanceStatus.present,
+        overtimeHours: -1.0); // left 1h early
+
+    final e = await repo.getById(id, month: month);
+    expect(e!.presentDays, 2);
+    // Net overtime = 2.0 + (-1.0) = 1.0 hours.
+    expect(e.overtimeHours, closeTo(1.0, 0.001));
+    // 2×500 + net 1.0×100 = 1000 + 100 = 1100.
+    expect(e.payableThisMonth, closeTo(1100, 0.001));
+  });
+
+  test('a net-negative overtime month reduces gross below day pay', () async {
+    final id = await repo.insert(
+      const Employee(name: 'Omar', dailyPay: 500, overtimeRate: 100),
+    );
+    // One full day, but 1.5h early-leave and no overtime → net -1.5h.
+    await repo.setAttendance(id, day(1), AttendanceStatus.present,
+        overtimeHours: -1.5);
+
+    final e = await repo.getById(id, month: month);
+    expect(e!.overtimeHours, closeTo(-1.5, 0.001));
+    // 1×500 + (-1.5)×100 = 500 - 150 = 350.
+    expect(e.payableThisMonth, closeTo(350, 0.001));
+  });
+
+  test('salary slip PDF renders with a negative (early-leave) overtime',
+      () async {
+    final e = const Employee(
+        id: 98, name: 'Nita', dailyPay: 500, overtimeRate: 100);
+    final payment = SalaryPayment(
+      employeeId: 98,
+      paymentMonth: month,
+      salaryEarned: 850,
+      cashPaid: 850,
+      advanceCredited: 0,
+      remaining: 0,
+      fullDays: 2,
+      halfDays: 0,
+      absentDays: 0,
+      overtimeHours: -1.5, // net early-leave
+      overtimeAmount: -150,
+      paymentDate: day(28),
+    );
+    final bytes = await SalarySlipPdfService.build(
+      employee: e,
+      payment: payment,
+    );
+    expect(bytes.length, greaterThan(1000));
+    expect(String.fromCharCodes(bytes.sublist(0, 4)), '%PDF');
+  });
+
   test('salary slip PDF renders to valid bytes', () async {
     final e = const Employee(
         id: 99, name: 'Amin', phone: '9876543210', dailyPay: 500, overtimeRate: 80);

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_colors.dart';
-import '../../../core/database/database_helper.dart';
 import '../../../core/utils/formatters.dart';
 import '../models/transaction.dart';
 import '../providers/transaction_providers.dart';
@@ -197,10 +196,10 @@ class DocListScreen extends ConsumerWidget {
 
   Future<void> _convert(BuildContext context, WidgetRef ref, int sourceId) async {
     final repo = ref.read(transactionRepositoryProvider);
-    final invoiceNumber = await _nextInvoiceNumber();
+    // The new sale's invoice number is minted atomically inside the conversion.
     final saleId = _isEstimate
-        ? await repo.convertEstimateToSale(sourceId, invoiceNumber)
-        : await repo.convertChallanToSale(sourceId, invoiceNumber);
+        ? await repo.convertEstimateToSale(sourceId)
+        : await repo.convertChallanToSale(sourceId);
     ref.refreshTransactions();
     if (!context.mounted) return;
     await Navigator.push(
@@ -211,9 +210,6 @@ class DocListScreen extends ConsumerWidget {
     );
     ref.refreshTransactions();
   }
-
-  Future<String> _nextInvoiceNumber() =>
-      DatabaseHelper.peekDocNumber('sale');
 }
 
 // ── Status tab chip ─────────────────────────────────────────────────────────

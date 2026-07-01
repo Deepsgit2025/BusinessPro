@@ -13,6 +13,8 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_lists.dart';
 import '../../../core/database/database_helper.dart';
 import '../../../core/utils/formatters.dart';
+import '../../../core/utils/responsive.dart';
+import '../../../shared/widgets/wide_shell_scaffold.dart';
 import '../../../services/ocr/bill_parser.dart';
 import '../../../services/ocr/bill_scanner_service.dart';
 import '../../items/models/item.dart';
@@ -31,10 +33,12 @@ import '../services/invoice_format_registry.dart';
 import '../services/transaction_share_service.dart';
 import '../utils/txn_calc.dart';
 import 'bill_preview_screen.dart';
+import '../widgets/billing_name_field.dart';
+import '../widgets/edit_number_dialog.dart';
 import '../widgets/item_line_widget.dart';
+import '../widgets/item_row_widget.dart';
 import '../widgets/item_picker.dart';
 import '../widgets/line_draft.dart';
-import '../widgets/party_picker.dart';
 import '../widgets/print_copies_sheet.dart';
 import '../widgets/totals_section.dart';
 import 'scan_result_screen.dart';
@@ -110,10 +114,20 @@ class _AddEditTransactionScreenState
   final _reference = TextEditingController();
   final _billingName = TextEditingController();
   final _phone = TextEditingController();
+  // One-off billing GSTIN + address (wide layout). Prefilled from a picked
+  // party; persisted on the document when no party is linked.
+  final _gstin = TextEditingController();
+  final _address = TextEditingController();
+
+  // Inline document-number editing (wide layout): the field edits [_txnNumber]
+  // directly. Uniqueness is validated when the field is committed (focus lost /
+  // submitted); a clash reverts to the last good value.
+  final _numberCtrl = TextEditingController();
+  final _numberFocus = FocusNode();
+  String _lastGoodNumber = '';
 
   // ── Invoice Format 1: transport & delivery + shipping (sale invoices only) ──
   final _ewayBill = TextEditingController();
-  final _placeOfSupply = TextEditingController();
   final _transportName = TextEditingController();
   final _vehicleNumber = TextEditingController();
   final _deliveryLocation = TextEditingController();
@@ -151,6 +165,14 @@ class _AddEditTransactionScreenState
   int? _paymentModeId;
   int? _accountId;
   String _txnNumber = '';
+
+  /// The auto-generated number first shown for a NEW document, kept so we can
+  /// tell whether the user manually overrode it. When overridden, saving a sale/
+  /// purchase does NOT consume the running counter (so the sequence isn't left
+  /// with a gap for a number that was never used). Null while editing.
+  String? _autoNumber;
+  bool get _numberOverridden =>
+      _autoNumber != null && _txnNumber != _autoNumber;
 
   bool get _isPurchase =>
       widget.mode == TxnFormMode.purchase ||
@@ -195,6 +217,10 @@ class _AddEditTransactionScreenState
   @override
   void initState() {
     super.initState();
+    // Commit the inline number edit when the field loses focus.
+    _numberFocus.addListener(() {
+      if (!_numberFocus.hasFocus) _commitInlineNumber();
+    });
     _bootstrap();
   }
 
@@ -220,65 +246,84 @@ class _AddEditTransactionScreenState
             ? await _peekNumber('purchase')
             : await _peekNumber(_isEstimate ? 'estimate' : 'invoice');
       }
+      // Remember the auto-generated number so an override can be detected on
+      // save (see _numberOverridden / counterType below).
+      _autoNumber = _txnNumber;
       // …then, if duplicating, copy the source's party / lines / notes onto it
       // (keeping the freshly-peeked number above).
       if (widget.duplicateFromId != null) {
         await _loadExisting(widget.duplicateFromId!, copyNumber: false);
       }
     }
+    // Seed the inline number field once the number is resolved.
+    _numberCtrl.text = _txnNumber;
+    _lastGoodNumber = _txnNumber;
     if (mounted) setState(() => _loading = false);
+  }
+
+  /// Validates and commits the inline-edited document number. Empty input or an
+  /// unchanged value reverts to the last good number; a value already used by
+  /// another document is rejected (revert + snack). Mirrors the validation the
+  /// old dialog did, just without the popup.
+  void _commitInlineNumber() async {
+    final entered = _numberCtrl.text.trim();
+    if (entered == _lastGoodNumber) return;
+    if (entered.isEmpty) {
+      _numberCtrl.text = _lastGoodNumber;
+      return;
+    }
+    final repo = ref.read(transactionRepositoryProvider);
+    final clash = await repo.numberExists(entered, excludeId: widget.existingId);
+    if (!mounted) return;
+    if (clash) {
+      _numberCtrl.text = _lastGoodNumber;
+      _snack('That number is already used');
+      return;
+    }
+    setState(() {
+      _txnNumber = entered;
+      _lastGoodNumber = entered;
+    });
   }
 
   /// Reads the next number without consuming the counter (consumed on save).
   /// Windows prepends `W-` (see [DatabaseHelper.deviceDocPrefix]) so the two
   /// devices never generate colliding ids.
   Future<String> _peekNumber(String kind) async {
-    // Sale + purchase use the per-prefix counter scheme (counter_<type>_<PREFIX>)
-    // so changing a prefix starts a fresh sequence without colliding with old
-    // numbers. Estimates keep their existing EST + invoice-counter display.
-    if (kind == 'purchase') return DatabaseHelper.peekDocNumber('purchase');
-    if (kind != 'estimate') return DatabaseHelper.peekDocNumber('sale');
-
-    final biz = await DatabaseHelper.getBusiness();
-    final dp = DatabaseHelper.deviceDocPrefix;
-    final c = (biz?['invoice_counter'] as int?) ?? 1;
-    return '${dp}EST-${c.toString().padLeft(4, '0')}';
+    // All auto-numbered types now share one reserved per-prefix counter scheme
+    // (counter_<type>_<PREFIX>), previewed without consuming. The previewed
+    // value is exactly what the atomic mint at save will produce. Sale/purchase
+    // honour their configurable prefix; estimate keeps its EST sequence (seeded
+    // once from the existing estimate count so existing data isn't renumbered).
+    if (kind == 'purchase') {
+      return DatabaseHelper.peekDocNumberForType(TxnTypes.purchase);
+    }
+    if (kind == 'estimate') {
+      return DatabaseHelper.peekDocNumberForType(TxnTypes.estimate);
+    }
+    return DatabaseHelper.peekDocNumberForType(TxnTypes.sale);
   }
 
-  /// Next Credit Note number, derived from how many sale returns already exist.
-  /// There is no dedicated counter column, so we count + 1 and label it "CN N".
-  /// The `W-` prefix on Windows also keeps these from colliding with Android's
-  /// (count-derived numbers would otherwise clash once both devices' returns sync).
-  Future<String> _peekReturnNumber() async {
-    final repo = ref.read(transactionRepositoryProvider);
-    final count = await repo.countByType(TxnTypes.saleReturn);
-    return '${DatabaseHelper.deviceDocPrefix}CN ${count + 1}';
-  }
+  /// Next Credit Note number ("CN N"), previewed from the reserved sale_return
+  /// counter (seeded once from the existing count). The mint at save reserves it
+  /// atomically, so two credit notes can never share a number.
+  Future<String> _peekReturnNumber() =>
+      DatabaseHelper.peekDocNumberForType(TxnTypes.saleReturn);
 
-  /// Next Purchase Return (Debit Note) number ("PR-1"). Derived from the count
-  /// of existing purchase returns; does not consume the purchase counter.
-  Future<String> _peekPurchaseReturnNumber() async {
-    final repo = ref.read(transactionRepositoryProvider);
-    final count = await repo.countByType(TxnTypes.purchaseReturn);
-    return '${DatabaseHelper.deviceDocPrefix}PR-${count + 1}';
-  }
+  /// Next Purchase Return (Debit Note) number ("PR-N"), from the reserved
+  /// purchase_return counter.
+  Future<String> _peekPurchaseReturnNumber() =>
+      DatabaseHelper.peekDocNumberForType(TxnTypes.purchaseReturn);
 
-  /// Next Purchase Order number ("PO-01"). Derived from the count of existing
-  /// purchase orders; does not consume the purchase counter.
-  Future<String> _peekPurchaseOrderNumber() async {
-    final repo = ref.read(transactionRepositoryProvider);
-    final count = await repo.countByType(TxnTypes.purchaseOrder);
-    return '${DatabaseHelper.deviceDocPrefix}PO-${(count + 1).toString().padLeft(2, '0')}';
-  }
+  /// Next Purchase Order number ("PO-01"), from the reserved purchase_order
+  /// counter.
+  Future<String> _peekPurchaseOrderNumber() =>
+      DatabaseHelper.peekDocNumberForType(TxnTypes.purchaseOrder);
 
-  /// Next Delivery Challan number ("DC-0001"). Like estimates, challans have no
-  /// dedicated counter column, so we derive it from the existing challan count
-  /// and never consume the invoice counter.
-  Future<String> _peekChallanNumber() async {
-    final repo = ref.read(transactionRepositoryProvider);
-    final count = await repo.countByType(TxnTypes.deliveryChallan);
-    return '${DatabaseHelper.deviceDocPrefix}DC-${(count + 1).toString().padLeft(4, '0')}';
-  }
+  /// Next Delivery Challan number ("DC-0001"), from the reserved
+  /// delivery_challan counter.
+  Future<String> _peekChallanNumber() =>
+      DatabaseHelper.peekDocNumberForType(TxnTypes.deliveryChallan);
 
   /// Loads [sourceId] into the form. On edit ([copyNumber] true) this restores
   /// the document verbatim; when duplicating ([copyNumber] false) the previously
@@ -299,7 +344,6 @@ class _AddEditTransactionScreenState
 
     // Invoice Format 1 transport / shipping fields (sale invoices).
     _ewayBill.text = txn.ewayBillNumber ?? '';
-    _placeOfSupply.text = txn.placeOfSupply ?? '';
     _transportName.text = txn.transportName ?? '';
     _vehicleNumber.text = txn.vehicleNumber ?? '';
     _deliveryLocation.text = txn.deliveryLocation ?? '';
@@ -312,7 +356,6 @@ class _AddEditTransactionScreenState
     _shipPincode.text = txn.shippingPincode ?? '';
     // Expand the transport panel if any of its fields carry data.
     _transportExpanded = (txn.ewayBillNumber ?? '').isNotEmpty ||
-        (txn.placeOfSupply ?? '').isNotEmpty ||
         (txn.transportName ?? '').isNotEmpty ||
         (txn.vehicleNumber ?? '').isNotEmpty ||
         (txn.deliveryLocation ?? '').isNotEmpty ||
@@ -322,7 +365,23 @@ class _AddEditTransactionScreenState
       _party = await PartyRepository().getById(txn.partyId!);
       _billingName.text = _party?.name ?? '';
       _phone.text = _party?.phone ?? '';
+      _gstin.text = _party?.gstin ?? '';
+      _address.text = _party?.billingAddress ?? '';
       _supplyState = _party?.billingState;
+    } else if ((txn.billingName ?? '').isNotEmpty ||
+        (txn.billingGstin ?? '').isNotEmpty ||
+        (txn.billingAddress ?? '').isNotEmpty) {
+      // One-off (free-text) party: no party record, restore the typed details.
+      _billingName.text = txn.billingName ?? '';
+      _gstin.text = txn.billingGstin ?? '';
+      _address.text = txn.billingAddress ?? '';
+    }
+    // The State of Supply that was actually billed is stored in placeOfSupply;
+    // it wins over the party's current billing state so re-opening an old doc
+    // shows (and re-applies the tax of) the state it was saved with.
+    final savedSupply = (txn.placeOfSupply ?? '').trim();
+    if (savedSupply.isNotEmpty && AppLists.indianStates.contains(savedSupply)) {
+      _supplyState = savedSupply;
     }
     _isCash = txn.paymentStatus == 'paid';
 
@@ -352,11 +411,14 @@ class _AddEditTransactionScreenState
     _reference.dispose();
     _billingName.dispose();
     _phone.dispose();
+    _gstin.dispose();
+    _address.dispose();
+    _numberCtrl.dispose();
+    _numberFocus.dispose();
     _manualTotal.dispose();
     _manualPaid.dispose();
     _received.dispose();
     _ewayBill.dispose();
-    _placeOfSupply.dispose();
     _transportName.dispose();
     _vehicleNumber.dispose();
     _deliveryLocation.dispose();
@@ -378,7 +440,15 @@ class _AddEditTransactionScreenState
   Future<void> _addItem() async {
     final item = await showItemPicker(context);
     if (item == null) return;
+    final draft = await _draftFromItem(item);
+    setState(() => _lines.add(draft));
+  }
 
+  /// Builds a [LineDraft] from a master [Item]: copies name/hsn/tax/price and,
+  /// for a real (saved) item, loads its unit tiers and applies the preferred
+  /// sale/purchase tier. A free-text item (id == null) yields a plain draft.
+  /// Shared by [_addItem] (picker) and the wide item-row autocomplete.
+  Future<LineDraft> _draftFromItem(Item item) async {
     final draft = LineDraft(
       itemId: item.id,
       itemName: item.name,
@@ -388,7 +458,6 @@ class _AddEditTransactionScreenState
       taxInclusive: item.taxInclusive,
       unitPrice: _isPurchase ? item.purchasePrice : item.salePrice,
     );
-
     if (item.id != null) {
       final tiers = await _itemUnitRepo.getItemUnits(item.id!);
       draft.tiers = tiers;
@@ -400,7 +469,14 @@ class _AddEditTransactionScreenState
         draft.applyTier(preferred, isPurchase: _isPurchase);
       }
     }
-    setState(() => _lines.add(draft));
+    return draft;
+  }
+
+  /// Appends a blank free-text line (wide item table "Add Items"): the user
+  /// types the item name inline, choosing a saved item from the dropdown or
+  /// keeping free text.
+  void _addBlankLine() {
+    setState(() => _lines.add(LineDraft(itemName: '')));
   }
 
   // ── Scan Bill (OCR purchase entry) ──────────────────────────────────────────
@@ -681,9 +757,52 @@ class _AddEditTransactionScreenState
       TxnFormMode.paymentOut => TxnTypes.paymentOut,
     };
 
+    final typedName = _billingName.text.trim();
+
+    // Credit sale/purchase to a typed-in name (no party picked): promote that
+    // name to a real party and link the document to it, so the person shows up
+    // in Parties with the balance they owe (or are owed). We only do this when
+    // the document actually carries a balance (credit) — a fully-paid cash sale
+    // to a walk-in stays free-text and doesn't clutter the party list. Estimates
+    // / challans / orders aren't billed (_showPayment == false) so never qualify.
+    // Edits keep their existing linkage untouched.
+    int? resolvedPartyId = _party?.id;
+    final isCredit = _showPayment && received < totals.total;
+    if (!_isEdit &&
+        resolvedPartyId == null &&
+        isCredit &&
+        typedName.isNotEmpty) {
+      final partyType = _isPurchase ? 'supplier' : 'customer';
+      final partyRepo = PartyRepository();
+      final matches =
+          await partyRepo.getParties(type: partyType, search: typedName);
+      final exact = matches
+          .where((p) => p.name.toLowerCase() == typedName.toLowerCase());
+      if (exact.isNotEmpty) {
+        resolvedPartyId = exact.first.id;
+      } else {
+        resolvedPartyId = await partyRepo.insert(Party(
+          name: typedName,
+          partyType: partyType,
+          phone: _phone.text.trim().isEmpty ? null : _phone.text.trim(),
+          gstin: _trimOrNull(_gstin),
+          billingAddress: _trimOrNull(_address),
+          billingState: _supplyState,
+        ));
+      }
+    }
+
+    // When still no party is linked (cash walk-in, or a non-billed doc), persist
+    // whatever was typed as a free-text billing name so a one-off party still
+    // names the document without creating a party record. Ignored once a party
+    // is linked (its name is authoritative via the join).
+    final oneOff = resolvedPartyId == null; // free-text (no party) document
     final txn = Transaction(
       id: widget.existingId,
-      partyId: _party?.id,
+      partyId: resolvedPartyId,
+      billingName: oneOff && typedName.isNotEmpty ? typedName : null,
+      billingGstin: oneOff ? _trimOrNull(_gstin) : null,
+      billingAddress: oneOff ? _trimOrNull(_address) : null,
       accountId: received > 0 ? _accountId : null,
       transactionType: txnType,
       transactionNumber: _txnNumber,
@@ -703,10 +822,12 @@ class _AddEditTransactionScreenState
       status: _isEstimate ? 'draft' : 'active',
       notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
       ewayBillNumber: _isSale ? _trimOrNull(_ewayBill) : null,
-      // Place of Supply prints on both the Format 1 invoice and Format 2
-      // estimate, so it's captured for sales and estimates.
-      placeOfSupply:
-          _isSale || _isEstimate ? _trimOrNull(_placeOfSupply) : null,
+      // The State of Supply (the tax-wired dropdown that decides IGST vs
+      // CGST+SGST) is what prints in the "Place of Supply" slot on the Format 1
+      // invoice and Format 2 estimate — there is no separate free-text field.
+      placeOfSupply: (_isSale || _isEstimate)
+          ? ((_supplyState?.trim().isEmpty ?? true) ? null : _supplyState!.trim())
+          : null,
       transportName: _isSale ? _trimOrNull(_transportName) : null,
       vehicleNumber: _isSale ? _trimOrNull(_vehicleNumber) : null,
       deliveryDate: _isSale ? _deliveryDate?.toIso8601String() : null,
@@ -736,25 +857,18 @@ class _AddEditTransactionScreenState
             paymentDate: _date.toIso8601String(),
           );
         }
-        // Only an actual Purchase Bill / Sale Invoice consumes a sequential
-        // per-prefix counter. Purchase returns/orders (PR-/PO-) and
-        // estimates/challans derive their numbers from a count instead.
-        final String? counterType;
-        if (widget.mode == TxnFormMode.purchase) {
-          counterType = 'purchase';
-        } else if (_isEstimate ||
-            _isChallan ||
-            _isPurchaseReturn ||
-            _isPurchaseOrder) {
-          counterType = null;
-        } else {
-          counterType = 'sale';
-        }
+        // The number is minted atomically inside the insert transaction for
+        // every auto-numbered type (sale, purchase, estimate, challan, returns,
+        // orders) — this is what prevents two saves from claiming the same
+        // number. A user-overridden number is authoritative as-is, so we pass
+        // null and the typed value on [txn] is stored verbatim (no counter move,
+        // so the running sequence keeps no gap for a number never auto-used).
+        final mintType = _numberOverridden ? null : txnType;
         savedId = await repo.create(
           txn,
           items,
           initialPayment: payment,
-          counterType: counterType,
+          mintType: mintType,
         );
       }
       ref.refreshTransactions();
@@ -883,8 +997,11 @@ class _AddEditTransactionScreenState
             paymentDate: _date.toIso8601String(),
           );
         }
-        // No dedicated counter column for credit notes; numbering is derived.
-        savedId = await repo.create(txn, items, initialPayment: payment);
+        // Credit-note number is minted atomically inside the insert (sale_return
+        // now holds its own reserved counter), unless the user overrode it.
+        savedId = await repo.create(txn, items,
+            initialPayment: payment,
+            mintType: _numberOverridden ? null : TxnTypes.saleReturn);
       }
 
       ref.refreshTransactions();
@@ -1075,7 +1192,6 @@ class _AddEditTransactionScreenState
       _manualPaid.clear();
       _received.clear();
       _ewayBill.clear();
-      _placeOfSupply.clear();
       _transportName.clear();
       _vehicleNumber.clear();
       _deliveryLocation.clear();
@@ -1091,6 +1207,10 @@ class _AddEditTransactionScreenState
       _invoiceDate = null;
       _saving = false;
       _txnNumber = next;
+      _numberCtrl.text = next;
+      _lastGoodNumber = next;
+      // Reset the override baseline so the next entry starts on the auto number.
+      _autoNumber = next;
     });
   }
 
@@ -1118,6 +1238,7 @@ class _AddEditTransactionScreenState
     if (_reference.text.trim().isNotEmpty) return true;
     if (_manualTotal.text.trim().isNotEmpty) return true;
     if (_manualPaid.text.trim().isNotEmpty) return true;
+    if (_numberOverridden) return true;
     return false;
   }
 
@@ -1171,6 +1292,7 @@ class _AddEditTransactionScreenState
           navigator.pop();
         }
       },
+      child: WideShellScaffold(
       child: Scaffold(
       backgroundColor: AppColors.surface(context),
       appBar: AppBar(
@@ -1198,7 +1320,9 @@ class _AddEditTransactionScreenState
         children: [
           _isCreditNote
           ? _creditNoteBody()
-          : ListView(
+          : (Responsive.isWide(context)
+              ? _wideBody(totals, totalQty)
+              : ListView(
         padding: EdgeInsets.zero,
         children: [
           if (_canScanBill) _scanBillBanner(),
@@ -1220,11 +1344,538 @@ class _AddEditTransactionScreenState
           _extraFields(),
           const SizedBox(height: 24),
         ],
-      ),
+      )),
           if (_scanning) _scanningOverlay(),
         ],
       ),
       bottomNavigationBar: _bottomBar(),
+      ),
+      ),
+    );
+  }
+
+  /// Wide (Windows / desktop) layout for the sale/purchase form. A compact,
+  /// space-efficient 3-section design that uses the horizontal width:
+  ///   1. TOP — merged Invoice + Billing + Payment (no inner card borders),
+  ///      fields laid out side-by-side in rows; optional Ship-To.
+  ///   2. MIDDLE — line items as a one-row-per-item table + running totals.
+  ///   3. BOTTOM — Transport / Delivery / Notes, also in compact rows.
+  /// Android and any narrow window keep the original single-column ListView.
+  Widget _wideBody(TxnTotals totals, double totalQty) {
+    // Left-aligned (hugs the side rail) and wider, so the form uses the
+    // horizontal space instead of floating centred with large side margins.
+    return Align(
+      alignment: Alignment.topLeft,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1400),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+          children: [
+            if (_canScanBill) ...[
+              _scanBillBanner(),
+              const SizedBox(height: 16),
+            ],
+            _wideTopSection(totals),
+            const SizedBox(height: 20),
+            _wideItemsSection(totals, totalQty),
+            const SizedBox(height: 20),
+            _wideBottomSection(),
+            const SizedBox(height: 24),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // ── Wide Section 1: Invoice + Billing + Payment (merged, borderless) ────────
+
+  Widget _wideTopSection(TxnTotals totals) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _wideHeading(_isEstimate
+            ? 'Estimate Details'
+            : _isChallan
+                ? 'Challan Details'
+                : 'Invoice Details'),
+        // Row 1: Invoice No. | Date | Phone
+        _row3(
+          _inlineNumberField(),
+          _wideDateField(),
+          _compactField(_phone, 'Phone Number',
+              keyboardType: TextInputType.phone),
+        ),
+        const SizedBox(height: 12),
+        // Row 2: Billing Name | GSTIN | Address
+        _row3(
+          BillingNameField(
+            partyType: _isPurchase ? 'supplier' : 'customer',
+            controller: _billingName,
+            label: _isPurchase ? 'Supplier Name' : 'Billing Name (Optional)',
+            onPartySelected: _onPartySelected,
+            onTextChanged: _onBillingNameTyped,
+          ),
+          _compactField(_gstin, 'GSTIN',
+              capitalization: TextCapitalization.characters),
+          _compactField(_address, 'Address'),
+        ),
+        const SizedBox(height: 12),
+        // Row 3: State of Supply | Payment Type | Deposit-to (non-sale) / blank
+        _row3(
+          _wideStateOfSupply(),
+          _showPayment ? _widePaymentType() : const SizedBox.shrink(),
+          (!_isSale && _showPayment)
+              ? _wideDepositTo()
+              : const SizedBox.shrink(),
+        ),
+        if (_interState)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Row(
+              children: const [
+                Icon(Icons.info_outline, size: 14, color: AppColors.partial),
+                SizedBox(width: 6),
+                Text('Inter-state supply — IGST applies',
+                    style: TextStyle(fontSize: 12, color: AppColors.partial)),
+              ],
+            ),
+          ),
+        // Received + Balance Due now render below the Total Amount bar in the
+        // items section (see [_wideItemsSection]), not here above the items.
+        // Ship To (sale only).
+        if (_isSale) ...[
+          const SizedBox(height: 12),
+          _shippingAndTransportSection(shippingOnly: true),
+        ],
+      ],
+    );
+  }
+
+  // ── Wide Section 2: Item table ──────────────────────────────────────────────
+
+  Widget _wideItemsSection(TxnTotals totals, double totalQty) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _wideHeading('Items'),
+        // Column header row.
+        Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: Row(
+            children: const [
+              Expanded(flex: 34, child: _ColHead('Item Name')),
+              SizedBox(width: 6),
+              Expanded(flex: 9, child: _ColHead('Qty')),
+              SizedBox(width: 6),
+              Expanded(flex: 11, child: _ColHead('Unit')),
+              SizedBox(width: 6),
+              Expanded(flex: 12, child: _ColHead('Price/Unit')),
+              SizedBox(width: 6),
+              Expanded(flex: 13, child: _ColHead('Tax %')),
+              SizedBox(width: 6),
+              Expanded(flex: 11, child: _ColHead('Disc')),
+              SizedBox(width: 6),
+              Expanded(
+                  flex: 13,
+                  child: _ColHead('Amount', align: TextAlign.right)),
+              SizedBox(width: 4),
+              SizedBox(width: 40, child: _ColHead('Incl.')),
+              SizedBox(width: 48),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        if (_lines.isEmpty)
+          const Padding(
+            padding: EdgeInsets.all(20),
+            child: Center(
+              child: Text('No items added',
+                  style: TextStyle(color: AppColors.textSecondary)),
+            ),
+          ),
+        for (var i = 0; i < _lines.length; i++)
+          ItemRowWidget(
+            key: ObjectKey(_lines[i]),
+            index: i + 1,
+            draft: _lines[i],
+            taxRates: _taxRates,
+            isPurchase: _isPurchase,
+            interState: _interState,
+            onChanged: () => setState(() {}),
+            onRemove: () => setState(() => _lines.removeAt(i)),
+            onItemPicked: (item) async {
+              final draft = await _draftFromItem(item);
+              if (!mounted) return;
+              setState(() => _lines[i] = draft);
+            },
+          ),
+        const SizedBox(height: 8),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: OutlinedButton.icon(
+            icon: const Icon(Icons.add_circle, color: AppColors.partial),
+            label: const Text('Add Items',
+                style: TextStyle(
+                    color: AppColors.partial, fontWeight: FontWeight.w600)),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              side: const BorderSide(color: AppColors.border),
+              shape:
+                  RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: _addBlankLine,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _totalAmountBar(totals.total),
+        // Credit mode: editable Received + live Balance Due, directly below the
+        // Total Amount bar (moved here from the top section, above the items).
+        if (_showPayment && !_isCash) ...[
+          const SizedBox(height: 4),
+          _receivedSection(totals.total),
+        ],
+      ],
+    );
+  }
+
+  // ── Wide Section 3: Transport / Delivery / Notes ────────────────────────────
+
+  Widget _wideBottomSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _wideHeading('Transport, Delivery & Notes'),
+        if (_isSale) ...[
+          // E-Way Bill | Transport Name | Vehicle Number
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: _compactField(_ewayBill, 'E-Way Bill Number')),
+              const SizedBox(width: 16),
+              Expanded(child: _compactField(_transportName, 'Transport Name')),
+              const SizedBox(width: 16),
+              Expanded(
+                child: _compactField(_vehicleNumber, 'Vehicle Number',
+                    capitalization: TextCapitalization.characters),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // Delivery Date | Delivery Location
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(child: _wideDeliveryDateField()),
+              const SizedBox(width: 16),
+              Expanded(child: _compactField(_deliveryLocation, 'Delivery Location')),
+            ],
+          ),
+          const SizedBox(height: 12),
+        ],
+        // Description | Reference No.
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _notes,
+                maxLines: 2,
+                decoration: const InputDecoration(
+                  labelText: 'Description',
+                  hintText: 'Add Note',
+                  alignLabelWithHint: true,
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: _isCreditNote
+                  ? const SizedBox.shrink()
+                  : _compactField(
+                      _reference,
+                      _isPurchase ? 'Supplier Invoice No.' : 'Reference No.'),
+            ),
+          ],
+        ),
+        if (_isEstimate) ...[
+          const SizedBox(height: 8),
+          _dateTile('Due Date', _dueDate, (d) => setState(() => _dueDate = d),
+              clearable: true),
+        ],
+      ],
+    );
+  }
+
+  // ── Wide layout shared helpers ──────────────────────────────────────────────
+
+  /// Light section heading for the borderless wide sections.
+  Widget _wideHeading(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(text,
+              style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textSecondary)),
+          const SizedBox(height: 6),
+          Divider(height: 1, color: AppColors.dividerOf(context)),
+          const SizedBox(height: 12),
+        ],
+      ),
+    );
+  }
+
+  /// Lays three fields side by side with even spacing (wide layout). Pass
+  /// `SizedBox.shrink()` for an empty slot to keep the others aligned.
+  Widget _row3(Widget a, Widget b, Widget c) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(child: a),
+        const SizedBox(width: 16),
+        Expanded(child: b),
+        const SizedBox(width: 16),
+        Expanded(child: c),
+      ],
+    );
+  }
+
+  /// Shared content padding for every wide-layout row field (text fields and
+  /// dropdowns alike) so they all render at the same height. The dropdowns
+  /// additionally clamp their inner row to [_kWideFieldLineHeight] so a
+  /// DropdownButton's larger intrinsic height doesn't make it taller than a
+  /// single-line text field that shares this padding.
+  static const EdgeInsets _kWideFieldPadding =
+      EdgeInsets.symmetric(horizontal: 10, vertical: 12);
+
+  /// Height of a single 14px text line, used to clamp the dropdowns' inner
+  /// content so dropdown boxes match the text fields exactly.
+  static const double _kWideFieldLineHeight = 19;
+
+  /// Compact outlined text field for the wide layout rows.
+  Widget _compactField(
+    TextEditingController controller,
+    String label, {
+    TextInputType? keyboardType,
+    TextCapitalization capitalization = TextCapitalization.none,
+  }) {
+    return TextField(
+      controller: controller,
+      keyboardType: keyboardType,
+      textCapitalization: capitalization,
+      style: const TextStyle(fontSize: 14),
+      decoration: InputDecoration(
+        labelText: label,
+        isDense: true,
+        contentPadding: _kWideFieldPadding,
+        border: const OutlineInputBorder(),
+      ),
+    );
+  }
+
+  /// Date field styled like [_compactField], opening the date picker on tap.
+  Widget _wideDateField() {
+    return InkWell(
+      onTap: () async {
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: _date,
+          firstDate: DateTime(2000),
+          lastDate: DateTime(2100),
+        );
+        if (picked != null) setState(() => _date = picked);
+      },
+      child: InputDecorator(
+        decoration: const InputDecoration(
+          labelText: 'Date',
+          isDense: true,
+          contentPadding: _kWideFieldPadding,
+          border: OutlineInputBorder(),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(Formatters.date(_date.toIso8601String()),
+                style: const TextStyle(fontSize: 14)),
+            const Icon(Icons.calendar_today,
+                size: 16, color: AppColors.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Delivery-date field (clearable) styled like [_compactField].
+  Widget _wideDeliveryDateField() {
+    return InkWell(
+      onTap: () async {
+        final picked = await showDatePicker(
+          context: context,
+          initialDate: _deliveryDate ?? DateTime.now(),
+          firstDate: DateTime(2000),
+          lastDate: DateTime(2100),
+        );
+        if (picked != null) setState(() => _deliveryDate = picked);
+      },
+      child: InputDecorator(
+        decoration: const InputDecoration(
+          labelText: 'Delivery Date',
+          isDense: true,
+          contentPadding: _kWideFieldPadding,
+          border: OutlineInputBorder(),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              _deliveryDate == null
+                  ? 'Not set'
+                  : Formatters.date(_deliveryDate!.toIso8601String()),
+              style: TextStyle(
+                  fontSize: 14,
+                  color: _deliveryDate == null
+                      ? AppColors.textHint
+                      : AppColors.textPrimaryOf(context)),
+            ),
+            if (_deliveryDate != null)
+              GestureDetector(
+                onTap: () => setState(() => _deliveryDate = null),
+                child: const Icon(Icons.clear,
+                    size: 18, color: AppColors.textSecondary),
+              )
+            else
+              const Icon(Icons.calendar_today,
+                  size: 16, color: AppColors.textSecondary),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// State-of-Supply dropdown as a compact outlined field (wide layout). Wired
+  /// to [_supplyState] exactly like the mobile section.
+  Widget _wideStateOfSupply() {
+    return InputDecorator(
+      decoration: const InputDecoration(
+        labelText: 'State of Supply',
+        isDense: true,
+        contentPadding: _kWideFieldPadding,
+        border: OutlineInputBorder(),
+      ),
+      child: SizedBox(
+        height: _kWideFieldLineHeight,
+        child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: AppLists.indianStates.contains(_supplyState)
+              ? _supplyState
+              : null,
+          isExpanded: true,
+          isDense: true,
+          hint: const Text('Select State',
+              style: TextStyle(color: AppColors.textSecondary, fontSize: 14)),
+          icon: const Icon(Icons.keyboard_arrow_down,
+              color: AppColors.textSecondary),
+          items: AppLists.indianStates
+              .map((s) => DropdownMenuItem(
+                  value: s,
+                  child:
+                      Text(s, style: const TextStyle(fontSize: 14))))
+              .toList(),
+          onChanged: (v) => setState(() => _supplyState = v),
+        ),
+        ),
+      ),
+    );
+  }
+
+  /// Payment-type (mode) dropdown as a compact outlined field (wide layout).
+  Widget _widePaymentType() {
+    final modes = ref.watch(paymentModesProvider);
+    return InputDecorator(
+      decoration: const InputDecoration(
+        labelText: 'Payment Type',
+        isDense: true,
+        contentPadding: _kWideFieldPadding,
+        border: OutlineInputBorder(),
+      ),
+      child: SizedBox(
+        height: _kWideFieldLineHeight,
+        child: modes.when(
+        loading: () => const SizedBox.shrink(),
+        error: (_, _) => const SizedBox.shrink(),
+        data: (list) {
+          _paymentModeId ??= list.where((m) => m.type == 'cash').firstOrNull?.id;
+          return DropdownButtonHideUnderline(
+            child: DropdownButton<int>(
+              value: _paymentModeId,
+              isExpanded: true,
+              isDense: true,
+              icon: const Icon(Icons.keyboard_arrow_down,
+                  color: AppColors.textSecondary),
+              items: list
+                  .map((m) => DropdownMenuItem(
+                        value: m.id,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.currency_rupee,
+                                size: 14, color: AppColors.accent),
+                            const SizedBox(width: 4),
+                            Text(m.name,
+                                style: const TextStyle(fontSize: 14)),
+                          ],
+                        ),
+                      ))
+                  .toList(),
+              onChanged: (v) => setState(() => _paymentModeId = v),
+            ),
+          );
+        },
+      ),
+      ),
+    );
+  }
+
+  /// "Deposit to" account dropdown (non-sale docs), compact wide variant.
+  Widget _wideDepositTo() {
+    final accounts = ref.watch(accountsProvider);
+    accounts.whenData((list) {
+      _accountId ??=
+          list.where((a) => a.isDefault).firstOrNull?.id ?? list.firstOrNull?.id;
+    });
+    return InputDecorator(
+      decoration: const InputDecoration(
+        labelText: 'Deposit to',
+        isDense: true,
+        contentPadding: _kWideFieldPadding,
+        border: OutlineInputBorder(),
+      ),
+      child: SizedBox(
+        height: _kWideFieldLineHeight,
+        child: accounts.when(
+        loading: () => const SizedBox.shrink(),
+        error: (_, _) => const SizedBox.shrink(),
+        data: (list) => DropdownButtonHideUnderline(
+          child: DropdownButton<int>(
+            value: _accountId,
+            isExpanded: true,
+            isDense: true,
+            icon: const Icon(Icons.keyboard_arrow_down,
+                color: AppColors.textSecondary),
+            items: list
+                .map((a) => DropdownMenuItem(
+                    value: a.id,
+                    child: Text(a.name, style: const TextStyle(fontSize: 14))))
+                .toList(),
+            onChanged: (v) => setState(() => _accountId = v),
+          ),
+        ),
+      ),
       ),
     );
   }
@@ -1427,7 +2078,10 @@ class _AddEditTransactionScreenState
       child: Row(
         children: [
           Expanded(
-            child: _labelledValue('Return No.', _txnNumber, chevron: true),
+            child: GestureDetector(
+              onTap: _editNumber,
+              child: _labelledValue('Return No.', _txnNumber, chevron: true),
+            ),
           ),
           Container(
             width: 1,
@@ -1670,14 +2324,20 @@ class _AddEditTransactionScreenState
       child: Row(
         children: [
           Expanded(
-            child: _labelledValue(
-              _isEstimate
-                  ? 'Estimate No.'
-                  : _isChallan
-                      ? 'Challan No.'
-                      : 'Invoice No.',
-              _txnNumber,
-            ),
+            child: Responsive.isWide(context)
+                ? _inlineNumberField()
+                : GestureDetector(
+                    onTap: _editNumber,
+                    child: _labelledValue(
+                      _isEstimate
+                          ? 'Estimate No.'
+                          : _isChallan
+                              ? 'Challan No.'
+                              : 'Invoice No.',
+                      _txnNumber,
+                      chevron: true,
+                    ),
+                  ),
           ),
           Container(
             width: 1,
@@ -1708,6 +2368,65 @@ class _AddEditTransactionScreenState
     );
   }
 
+  /// Inline-editable document number for the wide layout — the user types the
+  /// number directly in the header (no dialog). Commits on submit / focus loss
+  /// via [_commitInlineNumber], which validates uniqueness.
+  Widget _inlineNumberField() {
+    final label = _isEstimate
+        ? 'Estimate No.'
+        : _isChallan
+            ? 'Challan No.'
+            : 'Invoice No.';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label,
+            style:
+                const TextStyle(fontSize: 13, color: AppColors.textSecondary)),
+        TextField(
+          controller: _numberCtrl,
+          focusNode: _numberFocus,
+          textCapitalization: TextCapitalization.characters,
+          textInputAction: TextInputAction.done,
+          onSubmitted: (_) => _commitInlineNumber(),
+          style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          decoration: const InputDecoration(
+            isDense: true,
+            contentPadding: EdgeInsets.symmetric(vertical: 6),
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.border)),
+            focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.primary, width: 1.5)),
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Lets the user override the document number (e.g. type `K/100` instead of
+  /// the auto-generated `INV-0001`). The override is saved on this document only;
+  /// the running counter is untouched, so the next new document continues the
+  /// normal sequence. Blank input restores the auto-generated number. Validates
+  /// the chosen number isn't already used by another (non-deleted) document.
+  Future<void> _editNumber() async {
+    final label = _isEstimate
+        ? 'Estimate No.'
+        : _isChallan
+            ? 'Challan No.'
+            : _isCreditNote
+                ? 'Return No.'
+                : 'Invoice No.';
+    final result = await editDocumentNumber(
+      context,
+      label: label,
+      current: _txnNumber,
+      excludeId: widget.existingId,
+      repo: ref.read(transactionRepositoryProvider),
+    );
+    if (result != null) setState(() => _txnNumber = result);
+  }
+
   Widget _labelledValue(String label, String value, {bool chevron = false}) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1735,19 +2454,12 @@ class _AddEditTransactionScreenState
   Widget _billingFields() {
     return Column(
       children: [
-        InkWell(
-          onTap: _pickParty,
-          borderRadius: BorderRadius.circular(8),
-          child: IgnorePointer(
-            child: TextField(
-              controller: _billingName,
-              decoration: InputDecoration(
-                labelText:
-                    _isPurchase ? 'Supplier Name' : 'Billing Name (Optional)',
-                border: const OutlineInputBorder(),
-              ),
-            ),
-          ),
+        BillingNameField(
+          partyType: _isPurchase ? 'supplier' : 'customer',
+          controller: _billingName,
+          label: _isPurchase ? 'Supplier Name' : 'Billing Name (Optional)',
+          onPartySelected: _onPartySelected,
+          onTextChanged: _onBillingNameTyped,
         ),
         const SizedBox(height: 12),
         TextField(
@@ -1890,19 +2602,30 @@ class _AddEditTransactionScreenState
     );
   }
 
-  Future<void> _pickParty() async {
-    final p = await showPartyPicker(context,
-        type: _isPurchase ? 'supplier' : 'customer');
-    if (p != null) {
-      setState(() {
-        _party = p;
-        _billingName.text = p.name;
-        if ((p.phone ?? '').isNotEmpty) _phone.text = p.phone!;
-        // Auto-fill supply state from party; user can still override below.
-        if ((p.billingState ?? '').isNotEmpty) {
-          _supplyState = p.billingState;
-        }
-      });
+  /// Applies a saved party chosen from the billing-name dropdown: fills name /
+  /// phone and auto-fills the supply state.
+  void _onPartySelected(Party p) {
+    setState(() {
+      _party = p;
+      _billingName.text = p.name;
+      if ((p.phone ?? '').isNotEmpty) _phone.text = p.phone!;
+      // Prefill GSTIN / address from the party (editable below).
+      _gstin.text = p.gstin ?? '';
+      _address.text = p.billingAddress ?? '';
+      // Auto-fill supply state from party; user can still override below.
+      if ((p.billingState ?? '').isNotEmpty) {
+        _supplyState = p.billingState;
+      }
+    });
+  }
+
+  /// Called when the billing name is typed by hand. Once the text no longer
+  /// matches the selected party's name, clear the link so the document is
+  /// treated as a one-off (free-text) party — saved on the invoice via
+  /// billing_name, without creating a party record.
+  void _onBillingNameTyped(String value) {
+    if (_party != null && value.trim() != _party!.name) {
+      setState(() => _party = null);
     }
   }
 
@@ -2108,9 +2831,15 @@ class _AddEditTransactionScreenState
   /// Shipping-address toggle + collapsible Transport & Delivery section. Shown
   /// only on the Sale Invoice form. Both are entirely optional and feed the
   /// Format 1 invoice PDF (transport grid in the header, ship-to block).
-  Widget _shippingAndTransportSection() {
+  ///
+  /// [shippingOnly] (wide layout) renders just the Ship-To toggle + fields; the
+  /// transport fields are placed in the wide bottom section instead, so they
+  /// aren't duplicated.
+  Widget _shippingAndTransportSection({bool shippingOnly = false}) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      padding: shippingOnly
+          ? EdgeInsets.zero
+          : const EdgeInsets.fromLTRB(16, 12, 16, 0),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -2135,7 +2864,9 @@ class _AddEditTransactionScreenState
               ),
             ),
             const SizedBox(height: 12),
+            // City | Pincode | State on one compact line.
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: TextField(
@@ -2159,132 +2890,150 @@ class _AddEditTransactionScreenState
                     ),
                   ),
                 ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            DropdownButtonFormField<String>(
-              initialValue:
-                  AppLists.indianStates.contains(_shipState) ? _shipState : null,
-              isExpanded: true,
-              decoration: const InputDecoration(
-                labelText: 'State',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-              items: AppLists.indianStates
-                  .map((s) => DropdownMenuItem(value: s, child: Text(s)))
-                  .toList(),
-              onChanged: (v) => setState(() => _shipState = v),
-            ),
-          ],
-          const SizedBox(height: 4),
-          // Collapsible Transport & Delivery Details.
-          Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
-              tilePadding: EdgeInsets.zero,
-              childrenPadding: const EdgeInsets.only(bottom: 8),
-              initiallyExpanded: _transportExpanded,
-              onExpansionChanged: (v) => _transportExpanded = v,
-              title: const Text('Transport & Delivery Details',
-                  style:
-                      TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-              children: [
-                TextField(
-                  controller: _ewayBill,
-                  decoration: const InputDecoration(
-                    labelText: 'E-Way Bill Number',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _placeOfSupply,
-                  decoration: const InputDecoration(
-                    labelText: 'Place of Supply',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _transportName,
-                  decoration: const InputDecoration(
-                    labelText: 'Transport Name',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _vehicleNumber,
-                  textCapitalization: TextCapitalization.characters,
-                  decoration: const InputDecoration(
-                    labelText: 'Vehicle Number',
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                InkWell(
-                  onTap: () async {
-                    final picked = await showDatePicker(
-                      context: context,
-                      initialDate: _deliveryDate ?? DateTime.now(),
-                      firstDate: DateTime(2000),
-                      lastDate: DateTime(2100),
-                    );
-                    if (picked != null) setState(() => _deliveryDate = picked);
-                  },
-                  child: InputDecorator(
+                const SizedBox(width: 12),
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    initialValue: AppLists.indianStates.contains(_shipState)
+                        ? _shipState
+                        : null,
+                    isExpanded: true,
                     decoration: const InputDecoration(
-                      labelText: 'Delivery Date',
+                      labelText: 'State',
                       border: OutlineInputBorder(),
                       isDense: true,
                     ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          _deliveryDate == null
-                              ? 'Not set'
-                              : Formatters.date(
-                                  _deliveryDate!.toIso8601String()),
-                          style: TextStyle(
-                            color: _deliveryDate == null
-                                ? AppColors.textHint
-                                : AppColors.textPrimaryOf(context),
-                          ),
-                        ),
-                        if (_deliveryDate != null)
-                          GestureDetector(
-                            onTap: () => setState(() => _deliveryDate = null),
-                            child: const Icon(Icons.clear,
-                                size: 18, color: AppColors.textSecondary),
-                          )
-                        else
-                          const Icon(Icons.calendar_today,
-                              size: 16, color: AppColors.textSecondary),
-                      ],
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _deliveryLocation,
-                  decoration: const InputDecoration(
-                    labelText: 'Delivery Location',
-                    border: OutlineInputBorder(),
-                    isDense: true,
+                    items: AppLists.indianStates
+                        .map((s) => DropdownMenuItem(value: s, child: Text(s)))
+                        .toList(),
+                    onChanged: (v) => setState(() => _shipState = v),
                   ),
                 ),
               ],
             ),
-          ),
+          ],
+          // Transport & Delivery Details. Skipped in shippingOnly mode (wide
+          // layout shows them in the bottom section instead). On narrow (mobile)
+          // they stay tucked in a collapsible ExpansionTile to save space.
+          if (shippingOnly)
+            const SizedBox.shrink()
+          else ...[
+            const SizedBox(height: 4),
+            if (Responsive.isWide(context)) ...[
+              const Padding(
+                padding: EdgeInsets.only(top: 4, bottom: 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text('Transport & Delivery Details',
+                      style:
+                          TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                ),
+              ),
+              ..._transportFields(),
+            ] else
+            Theme(
+              data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+              child: ExpansionTile(
+                tilePadding: EdgeInsets.zero,
+                childrenPadding: const EdgeInsets.only(bottom: 8),
+                initiallyExpanded: _transportExpanded,
+                onExpansionChanged: (v) => _transportExpanded = v,
+                title: const Text('Transport & Delivery Details',
+                    style:
+                        TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                children: _transportFields(),
+              ),
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  /// The Transport & Delivery input fields (E-Way Bill, Transport Name,
+  /// Vehicle Number, Delivery Date, Delivery Location). Shared
+  /// between the always-expanded wide layout and the collapsible mobile one.
+  List<Widget> _transportFields() {
+    return [
+      TextField(
+        controller: _ewayBill,
+        decoration: const InputDecoration(
+          labelText: 'E-Way Bill Number',
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _transportName,
+        decoration: const InputDecoration(
+          labelText: 'Transport Name',
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _vehicleNumber,
+        textCapitalization: TextCapitalization.characters,
+        decoration: const InputDecoration(
+          labelText: 'Vehicle Number',
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+      ),
+      const SizedBox(height: 12),
+      InkWell(
+        onTap: () async {
+          final picked = await showDatePicker(
+            context: context,
+            initialDate: _deliveryDate ?? DateTime.now(),
+            firstDate: DateTime(2000),
+            lastDate: DateTime(2100),
+          );
+          if (picked != null) setState(() => _deliveryDate = picked);
+        },
+        child: InputDecorator(
+          decoration: const InputDecoration(
+            labelText: 'Delivery Date',
+            border: OutlineInputBorder(),
+            isDense: true,
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                _deliveryDate == null
+                    ? 'Not set'
+                    : Formatters.date(_deliveryDate!.toIso8601String()),
+                style: TextStyle(
+                  color: _deliveryDate == null
+                      ? AppColors.textHint
+                      : AppColors.textPrimaryOf(context),
+                ),
+              ),
+              if (_deliveryDate != null)
+                GestureDetector(
+                  onTap: () => setState(() => _deliveryDate = null),
+                  child: const Icon(Icons.clear,
+                      size: 18, color: AppColors.textSecondary),
+                )
+              else
+                const Icon(Icons.calendar_today,
+                    size: 16, color: AppColors.textSecondary),
+            ],
+          ),
+        ),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _deliveryLocation,
+        decoration: const InputDecoration(
+          labelText: 'Delivery Location',
+          border: OutlineInputBorder(),
+          isDense: true,
+        ),
+      ),
+    ];
   }
 
   Widget _extraFields() {
@@ -2298,16 +3047,6 @@ class _AddEditTransactionScreenState
                 (d) => setState(() => _dueDate = d),
                 clearable: true),
             const SizedBox(height: 8),
-            // Place of Supply prints in the Format 2 estimate header.
-            TextField(
-              controller: _placeOfSupply,
-              decoration: const InputDecoration(
-                labelText: 'Place of Supply',
-                border: OutlineInputBorder(),
-                isDense: true,
-              ),
-            ),
-            const SizedBox(height: 12),
           ],
           // Notes are text only — no image/photo attachment (Invoice Format 1).
           TextField(
@@ -2370,6 +3109,26 @@ class _AddEditTransactionScreenState
         );
         if (picked != null) onPick(picked);
       },
+    );
+  }
+}
+
+/// Column header label for the wide item table.
+class _ColHead extends StatelessWidget {
+  final String text;
+  final TextAlign align;
+  const _ColHead(this.text, {this.align = TextAlign.left});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      textAlign: align,
+      style: const TextStyle(
+        fontSize: 11,
+        fontWeight: FontWeight.w700,
+        color: AppColors.textSecondary,
+      ),
     );
   }
 }

@@ -178,6 +178,11 @@ class SyncEngine {
       'parties',
       'items',
       'item_units',
+      // Employee module (v14): parent before its cascade children.
+      'employees',
+      'attendance',
+      'salary_payments',
+      'employee_advances',
       'transactions',
       'transaction_items',
       'payments',
@@ -256,6 +261,29 @@ class SyncEngine {
     final local = await _repo.findByUuid(table, remote.uuid);
 
     if (local == null) {
+      // No uuid match. For a table with a cross-device natural identity (e.g.
+      // attendance is UNIQUE(employee_id, date)), the same logical row may
+      // already exist locally under a DIFFERENT uuid — created independently on
+      // this device. Inserting would violate the UNIQUE constraint and (under
+      // ConflictAlgorithm.replace) silently delete the local row. Detect that
+      // collision and resolve it as latest-wins, converging both onto the
+      // remote uuid when the remote wins.
+      if (_repo.hasNaturalIdentity(table)) {
+        final remapped =
+            await _repo.remapForeignKeysForLookup(table, remote.data);
+        final twin = await _repo.findByNaturalKey(table, remapped);
+        if (twin != null) {
+          if (_remoteWins(remote, twin)) {
+            await _repo.updateFromSyncByLocalId(
+                table, twin['id'] as int, remote.uuid, remote.data,
+                remote.updatedAt);
+            return MergeAction.updated;
+          }
+          // Local twin wins; it re-uploads next run so the other device
+          // converges onto our copy (and our uuid).
+          return MergeAction.conflict;
+        }
+      }
       await _repo.insertFromSync(table, remote.data, remote.updatedAt);
       return MergeAction.inserted;
     }

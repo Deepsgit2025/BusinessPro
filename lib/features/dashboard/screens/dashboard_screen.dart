@@ -4,8 +4,11 @@ import '../../../core/constants/app_colors.dart';
 import '../../../core/providers/business_provider.dart';
 import '../../../core/utils/formatters.dart';
 import '../../items/screens/add_edit_item_screen.dart';
+import '../../transactions/models/transaction.dart';
 import '../../transactions/providers/transaction_providers.dart';
+import '../../transactions/screens/sale_detail_screen.dart';
 import '../../transactions/screens/sale_list_screen.dart';
+import '../../transactions/services/document_actions.dart';
 import '../../transactions/widgets/transaction_card.dart';
 
 class DashboardScreen extends ConsumerStatefulWidget {
@@ -282,6 +285,33 @@ class _SectionHeader extends StatelessWidget {
 }
 
 class _RecentTransactions extends ConsumerWidget {
+  /// Routes a tapped recent-transaction card to its detail screen, mirroring
+  /// the list screens: sale/purchase (and every billed document type) open the
+  /// shared [SaleDetailScreen]. Cash transactions (expense / other_income) have
+  /// no dedicated detail screen anywhere in the app, so they fall back to their
+  /// respective list screen — the same surface that creates them.
+  Future<void> _openTransaction(
+      BuildContext context, WidgetRef ref, Transaction txn) async {
+    switch (txn.transactionType) {
+      case TxnTypes.expense:
+        await Navigator.pushNamed(context, '/expense');
+      case TxnTypes.otherIncome:
+        await Navigator.pushNamed(context, '/income');
+      default:
+        await Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => SaleDetailScreen(transactionId: txn.id!),
+          ),
+        );
+    }
+    // Sync or an edit on the detail screen may have changed balances; refresh
+    // the recent list and the To Collect / To Pay totals, as the list screens do.
+    ref.refreshTransactions();
+    ref.invalidate(outstandingReceivablesProvider);
+    ref.invalidate(outstandingPayablesProvider);
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final asyncTxns = ref.watch(recentTransactionsProvider);
@@ -336,7 +366,21 @@ class _RecentTransactions extends ConsumerWidget {
             }
             return Column(
               children: txns
-                  .map((txn) => TransactionCard(txn: txn, onTap: () {}))
+                  .map((txn) => TransactionCard(
+                        // Stable identity per transaction so a card Element is
+                        // matched to its data (and routes to the right id) after
+                        // the list refreshes — same reason the list screens key
+                        // their cards.
+                        key: ValueKey(txn.id),
+                        txn: txn,
+                        onTap: () => _openTransaction(context, ref, txn),
+                        // Auto-hidden for the expense / income rows (no PDF) by
+                        // the card's own PDF-able gate.
+                        onPrint: () =>
+                            DocumentActions.printById(context, ref, txn),
+                        onShare: () =>
+                            DocumentActions.shareById(context, ref, txn),
+                      ))
                   .toList(),
             );
           },

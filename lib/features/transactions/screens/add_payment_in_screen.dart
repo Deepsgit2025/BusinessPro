@@ -13,10 +13,15 @@ import '../models/transaction.dart';
 import '../providers/transaction_providers.dart';
 import '../services/invoice_pdf_service.dart';
 import '../services/transaction_share_service.dart';
+import '../widgets/edit_number_dialog.dart';
 import '../widgets/party_picker.dart';
 
 class AddPaymentInScreen extends ConsumerStatefulWidget {
-  const AddPaymentInScreen({super.key});
+  /// When set, the screen edits this existing payment-in receipt in place
+  /// (number and date preserved) instead of creating a new one.
+  final int? existingId;
+
+  const AddPaymentInScreen({super.key, this.existingId});
 
   @override
   ConsumerState<AddPaymentInScreen> createState() => _AddPaymentInScreenState();
@@ -27,6 +32,12 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
   final _notesCtrl = TextEditingController();
 
   String _receiptNumber = '';
+  /// Auto-generated receipt number first shown for a NEW receipt, kept to detect
+  /// a manual override (which then doesn't consume the receipt counter). Null on
+  /// edit.
+  String? _autoNumber;
+  bool get _numberOverridden =>
+      _autoNumber != null && _receiptNumber != _autoNumber;
   DateTime _date = DateTime.now();
   Party? _party;
   double _partyBalance = 0;
@@ -41,9 +52,54 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
     _bootstrap();
   }
 
+  bool get _isEdit => widget.existingId != null;
+
   Future<void> _bootstrap() async {
-    _receiptNumber = await DatabaseHelper.peekReceiptNumber();
+    if (_isEdit) {
+      await _loadExisting(widget.existingId!);
+    } else {
+      _receiptNumber = await DatabaseHelper.peekReceiptNumber();
+      _autoNumber = _receiptNumber;
+    }
     if (mounted) setState(() => _loading = false);
+  }
+
+  /// Lets the user override the receipt number (e.g. `K/100`). The override is
+  /// saved on this receipt only; the running counter is untouched so the next
+  /// new receipt continues the normal sequence.
+  Future<void> _editNumber() async {
+    final repo = ref.read(transactionRepositoryProvider);
+    final result = await editDocumentNumber(
+      context,
+      label: 'Receipt No.',
+      current: _receiptNumber,
+      excludeId: widget.existingId,
+      repo: repo,
+    );
+    if (result != null) setState(() => _receiptNumber = result);
+  }
+
+  /// Loads an existing payment-in receipt into the form for editing: its number,
+  /// date, party (with current balance), amount, mode/account and note.
+  Future<void> _loadExisting(int id) async {
+    final repo = ref.read(transactionRepositoryProvider);
+    final txn = await repo.getById(id);
+    if (txn == null) return;
+    _receiptNumber = txn.transactionNumber;
+    _date = DateTime.tryParse(txn.transactionDate) ?? DateTime.now();
+    _amountCtrl.text = Formatters.plain(txn.totalAmount);
+    _notesCtrl.text = txn.notes ?? '';
+    _accountId = txn.accountId;
+    if (txn.partyId != null) {
+      _party = await PartyRepository().getById(txn.partyId!);
+      _partyBalance = _party?.netBalance ?? 0;
+    }
+    // Recover the payment mode from the original payment row.
+    final payments = await repo.getPayments(id);
+    if (payments.isNotEmpty) {
+      _paymentModeId = payments.first.paymentModeId;
+      _accountId ??= payments.first.accountId;
+    }
   }
 
   @override
@@ -84,14 +140,20 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
     }
     setState(() => _saving = true);
 
-    final receiptNum = await DatabaseHelper.nextReceiptNumber();
+    // On edit, keep the existing receipt number. On a new receipt, the number is
+    // minted atomically inside the insert (mintType below) so two saves can't
+    // claim the same receipt number — unless the user overrode it, in which case
+    // we keep the override and the counter is left untouched (no sequence gap).
     final repo = ref.read(transactionRepositoryProvider);
+    final mintType =
+        (_isEdit || _numberOverridden) ? null : TxnTypes.paymentIn;
 
     final txn = Transaction(
+      id: widget.existingId,
       partyId: _party?.id,
       accountId: _accountId,
       transactionType: TxnTypes.paymentIn,
-      transactionNumber: receiptNum,
+      transactionNumber: _receiptNumber,
       transactionDate: _date.toIso8601String(),
       totalAmount: amount,
       notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
@@ -105,10 +167,17 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
     );
 
     try {
-      final id = await repo.createCashTransaction(txn, payment: payment);
+      final int id;
+      if (_isEdit) {
+        await repo.updateCashTransaction(txn, payment: payment);
+        id = widget.existingId!;
+      } else {
+        id = await repo.createCashTransaction(txn,
+            payment: payment, mintType: mintType);
+      }
       ref.refreshTransactions();
       if (!mounted) return null;
-      _snack('Payment-In saved');
+      _snack(_isEdit ? 'Payment-In updated' : 'Payment-In saved');
       if (pop) {
         Navigator.pop(context, true);
       } else {
@@ -231,8 +300,8 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
         elevation: 0,
         scrolledUnderElevation: 0,
         shape: Border(bottom: BorderSide(color: AppColors.dividerOf(context))),
-        title: const Text('Payment-In',
-            style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
+        title: Text(_isEdit ? 'Edit Payment-In' : 'Payment-In',
+            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w700)),
         actions: [
           IconButton(
             icon: const Icon(Icons.share_outlined),
@@ -255,10 +324,13 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                   child: Row(
                     children: [
                       Expanded(
-                        child: _HeaderField(
-                          label: 'Receipt No.',
-                          value: _receiptNumber,
-                          icon: Icons.expand_more,
+                        child: GestureDetector(
+                          onTap: _editNumber,
+                          child: _HeaderField(
+                            label: 'Receipt No.',
+                            value: _receiptNumber,
+                            icon: Icons.expand_more,
+                          ),
                         ),
                       ),
                       Container(
@@ -285,10 +357,14 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                   child: Align(
                     alignment: Alignment.centerRight,
                     child: Text(
-                      'Party Balance: ${Formatters.currency(_partyBalance)}',
-                      style: const TextStyle(
+                      'Party Balance: ${Formatters.currency(_partyBalance.abs())}',
+                      style: TextStyle(
                           fontSize: 12,
-                          color: AppColors.expense,
+                          // Positive net balance ⇒ customer owes us (To Collect,
+                          // green); negative ⇒ we owe them (To Pay, red).
+                          color: _partyBalance < 0
+                              ? AppColors.expense
+                              : AppColors.income,
                           fontWeight: FontWeight.w500),
                     ),
                   ),
@@ -525,7 +601,7 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                   style: OutlinedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 14),
                   ),
-                  child: const Text('Save & New'),
+                  child: Text(_isEdit ? 'Cancel' : 'Save & New'),
                 ),
               ),
               const SizedBox(width: 12),
@@ -544,8 +620,8 @@ class _AddPaymentInScreenState extends ConsumerState<AddPaymentInScreen> {
                           width: 20,
                           child: CircularProgressIndicator(
                               strokeWidth: 2, color: Colors.white))
-                      : const Text('Save',
-                          style: TextStyle(
+                      : Text(_isEdit ? 'Update' : 'Save',
+                          style: const TextStyle(
                               fontSize: 16, fontWeight: FontWeight.w600)),
                 ),
               ),

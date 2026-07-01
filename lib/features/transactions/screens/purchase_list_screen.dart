@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../../core/constants/app_colors.dart';
 import '../models/transaction.dart';
 import '../providers/transaction_providers.dart';
+import '../services/document_actions.dart';
 import '../widgets/transaction_card.dart';
 import 'add_edit_transaction_screen.dart';
 import 'add_payment_out_screen.dart';
@@ -82,6 +83,10 @@ class PurchaseListScreen extends ConsumerWidget {
                       txn: txn,
                       onTap: () => _open(context, ref, txn),
                       onLongPress: () => _longPressMenu(context, ref, txn),
+                      onPrint: () =>
+                          DocumentActions.printById(context, ref, txn),
+                      onShare: () =>
+                          DocumentActions.shareById(context, ref, txn),
                     );
                   },
                 ),

@@ -1,5 +1,14 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
+
+# The bundled Firebase C++ SDK ships a CMakeLists with a very old
+# `cmake_minimum_required`, which modern CMake (>=4) refuses to configure. Set a
+# floor policy version so those old-but-vendored subprojects configure anyway.
+# Must be set before any add_subdirectory / plugin include pulls them in.
+if(NOT DEFINED CMAKE_POLICY_VERSION_MINIMUM)
+  set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+endif()
+
 project(business_pro LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -65,9 +74,12 @@ include(flutter/generated_plugins.cmake)
 set(BUILD_BUNDLE_DIR "$<TARGET_FILE_DIR:${BINARY_NAME}>")
 # Make the "install" step default, as it's required to run.
 set(CMAKE_VS_INCLUDE_INSTALL_TO_DEFAULT_BUILD 1)
-if(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT)
-  set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
-endif()
+# Install next to the built executable so the app runs in place. The stock
+# template only does this when CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT is
+# set, but recent CMake doesn't set that reliably here, leaving the prefix at
+# the system default (C:/Program Files/business_pro) which needs admin rights
+# and fails the install step. Force it unconditionally.
+set(CMAKE_INSTALL_PREFIX "${BUILD_BUNDLE_DIR}" CACHE PATH "..." FORCE)
 
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}")

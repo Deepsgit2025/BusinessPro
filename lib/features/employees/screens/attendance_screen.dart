@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 
@@ -11,10 +10,16 @@ import '../providers/employee_providers.dart';
 
 /// Day-at-a-time attendance roster for the whole team. Each employee gets one
 /// row with three mutually-exclusive status choices (Full / Half / Absent) plus
-/// a *separate*, independent OT toggle. OT only applies to a worked day, so the
-/// toggle is shown only when the row is Full or Half; tapping it slides a side
-/// panel in from the right (an [AnimatedContainer] that animates from width
-/// 0 → 160) for entering overtime hours. One panel open at a time.
+/// a *separate*, independent overtime adjustment stepped with − / + buttons.
+///
+/// The overtime value is **signed**: positive hours are overtime worked, and a
+/// negative value records an early-leave (the employee left before time). At
+/// month-end the signed hours net against each other, so an early-leave is
+/// deducted from overtime — the payroll roll-up already sums `overtime_hours`,
+/// so no calculation changes are needed here.
+///
+/// A **Holiday** toggle at the top marks every employee Absent in one tap (still
+/// individually editable afterwards), so a shop holiday isn't entered row-by-row.
 class AttendanceScreen extends ConsumerStatefulWidget {
   const AttendanceScreen({super.key});
 
@@ -24,26 +29,22 @@ class AttendanceScreen extends ConsumerStatefulWidget {
 
 /// Local row status — mirrors [AttendanceStatus]. Overtime is NOT a status: it
 /// rides on the day's row independently (tracked via [_overtimeMap]), so a day
-/// can be Full+OT or Half+OT.
+/// can be Full+OT or Half+OT (or carry a negative early-leave adjustment).
 enum _RowStatus { full, half, absent }
 
 class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
+  /// Each − / + tap nudges the overtime adjustment by this many hours.
+  static const _otStep = 0.5;
+
   DateTime _selectedDate = DateTime.now();
   final Map<int, _RowStatus> _statusMap = {}; // employeeId → status
-  final Map<int, double> _overtimeMap = {}; // employeeId → hours
-  int? _overtimePanelEmployeeId; // which employee's OT panel is open
-  final _overtimeController = TextEditingController();
+  final Map<int, double> _overtimeMap = {}; // employeeId → signed hours
+  bool _holiday = false; // "everyone absent today" convenience toggle
 
   String _loadedDateKey = ''; // guards re-priming state on rebuild
   bool _saving = false;
 
   String get _dateKey => DateFormat('yyyy-MM-dd').format(_selectedDate);
-
-  @override
-  void dispose() {
-    _overtimeController.dispose();
-    super.dispose();
-  }
 
   /// Pulls existing rows for the selected day and seeds the local maps. Runs once
   /// per date (guarded by [_loadedDateKey]); employees with no row default to
@@ -58,15 +59,16 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     setState(() {
       _statusMap.clear();
       _overtimeMap.clear();
+      _holiday = false; // the toggle never carries across days
       for (final e in employees) {
         final att = existing[e.id];
         if (att == null) {
           _statusMap[e.id!] = _RowStatus.full;
         } else {
           // Status and overtime are independent — a day can be Full/Half *and*
-          // carry overtime hours.
+          // carry an overtime / early-leave adjustment.
           _statusMap[e.id!] = _fromStatus(att.status);
-          if (att.overtimeHours > 0) _overtimeMap[e.id!] = att.overtimeHours;
+          if (att.overtimeHours != 0) _overtimeMap[e.id!] = att.overtimeHours;
         }
       }
     });
@@ -87,7 +89,6 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
   void _shiftDay(int delta) {
     setState(() {
       _selectedDate = _selectedDate.add(Duration(days: delta));
-      _overtimePanelEmployeeId = null;
       _loadedDateKey = ''; // force re-prime for the new day
     });
   }
@@ -98,37 +99,55 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     return next.isBefore(DateTime(tomorrow.year, tomorrow.month, tomorrow.day));
   }
 
-  /// Opens the OT hours panel for [e]. Status is untouched — OT rides alongside
-  /// the day's Full/Half status. (Only callable when the row is Full or Half;
-  /// the toggle is hidden for Absent.)
-  void _openOvertimePanel(Employee e) {
-    setState(() {
-      _overtimePanelEmployeeId = e.id;
-      final hours = _overtimeMap[e.id] ?? 0;
-      _overtimeController.text = hours > 0 ? Formatters.plain(hours) : '';
-    });
+  /// Holiday toggle. ON marks everyone Absent (clearing any overtime, since an
+  /// Absent day carries none). OF re-primes the day from the DB, reverting rows
+  /// to their saved/default state.
+  void _setHoliday(bool on, List<Employee> employees) {
+    if (on) {
+      setState(() {
+        _holiday = true;
+        for (final e in employees) {
+          _statusMap[e.id!] = _RowStatus.absent;
+        }
+        _overtimeMap.clear();
+      });
+    } else {
+      // Revert: re-prime from the DB for this day.
+      setState(() {
+        _holiday = false;
+        _loadedDateKey = '';
+      });
+      _primeForDate(employees);
+    }
   }
 
-  /// Confirms the entered hours. Entering 0 (or clearing) removes the day's
-  /// overtime, leaving the Full/Half status as-is.
-  void _confirmOvertime() {
-    final id = _overtimePanelEmployeeId;
-    if (id == null) return;
-    final hours = double.tryParse(_overtimeController.text.trim()) ?? 0;
+  void _setStatus(Employee e, _RowStatus status) {
     setState(() {
-      if (hours > 0) {
-        _overtimeMap[id] = hours;
-      } else {
-        _overtimeMap.remove(id);
+      _statusMap[e.id!] = status;
+      // Absent days carry no overtime — drop any logged adjustment.
+      if (status == _RowStatus.absent) {
+        _overtimeMap.remove(e.id);
+      } else if (_holiday) {
+        // Flipping anyone back to a worked day means it's no longer a clean
+        // "everyone absent" holiday — reflect that in the toggle.
+        _holiday = false;
       }
-      _overtimePanelEmployeeId = null;
     });
   }
 
-  void _cancelOvertime() {
-    if (_overtimePanelEmployeeId == null) return;
-    // OT is independent of status now, so there's nothing to revert — just close.
-    setState(() => _overtimePanelEmployeeId = null);
+  /// Steps an employee's signed overtime adjustment by [delta] hours. The value
+  /// may go negative (early-leave). No-op for an Absent row (an absent day has no
+  /// hours). Values within a hair of zero collapse to "no adjustment".
+  void _adjustOvertime(Employee e, double delta) {
+    if ((_statusMap[e.id] ?? _RowStatus.full) == _RowStatus.absent) return;
+    setState(() {
+      final next = (_overtimeMap[e.id] ?? 0) + delta;
+      if (next.abs() < 0.001) {
+        _overtimeMap.remove(e.id);
+      } else {
+        _overtimeMap[e.id!] = next;
+      }
+    });
   }
 
   Future<void> _save(List<Employee> employees) async {
@@ -137,7 +156,7 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     final key = _dateKey;
     for (final e in employees) {
       final status = _statusMap[e.id] ?? _RowStatus.full;
-      // OT only counts on a worked day; an Absent day carries no overtime.
+      // OT only counts on a worked day; an Absent day carries no adjustment.
       final ot =
           status == _RowStatus.absent ? 0.0 : (_overtimeMap[e.id] ?? 0);
       await repo.setAttendance(e.id!, key, _toStatus(status),
@@ -169,27 +188,12 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
           return Column(
             children: [
               _buildDateNav(),
+              if (employees.isNotEmpty) _buildHolidayToggle(employees),
               const Divider(height: 1),
               Expanded(
                 child: employees.isEmpty
                     ? const Center(child: Text('No employees yet'))
-                    : Row(
-                        // Pin the (short) table to the top of the Expanded area;
-                        // the Row's default center alignment was floating it down
-                        // and leaving a large gap under the date row.
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Expanded(child: _buildTable(employees)),
-                          AnimatedContainer(
-                            duration: const Duration(milliseconds: 250),
-                            curve: Curves.easeInOut,
-                            width: _overtimePanelEmployeeId != null ? 160 : 0,
-                            child: _overtimePanelEmployeeId != null
-                                ? _buildOvertimePanel(employees)
-                                : const SizedBox.shrink(),
-                          ),
-                        ],
-                      ),
+                    : _buildTable(employees),
               ),
               SafeArea(
                 child: Padding(
@@ -224,8 +228,7 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
   }
 
   Widget _buildDateNav() {
-    // Tight bottom padding so the roster table starts right under the date row
-    // (no large vertical gap between the two).
+    // Tight bottom padding so the roster starts right under the date row.
     return Padding(
       padding: const EdgeInsets.only(top: 8, bottom: 4),
       child: Row(
@@ -248,15 +251,49 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     );
   }
 
+  /// The "shop holiday" convenience toggle — one tap marks everyone Absent.
+  Widget _buildHolidayToggle(List<Employee> employees) {
+    return Container(
+      margin: const EdgeInsets.fromLTRB(12, 0, 12, 6),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      decoration: BoxDecoration(
+        color: _holiday
+            ? AppColors.expense.withValues(alpha: 0.08)
+            : AppColors.cardLight,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(
+          color: _holiday ? AppColors.expense : AppColors.border,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(Icons.beach_access_outlined,
+              size: 20,
+              color: _holiday ? AppColors.expense : AppColors.textSecondary),
+          const SizedBox(width: 10),
+          const Expanded(
+            child: Text('Holiday — mark everyone absent',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+          ),
+          Switch(
+            value: _holiday,
+            activeThumbColor: AppColors.expense,
+            onChanged: (v) => _setHoliday(v, employees),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildTable(List<Employee> employees) {
     return SingleChildScrollView(
       child: Table(
         columnWidths: const {
-          0: FlexColumnWidth(3),
+          0: FlexColumnWidth(2.4),
           1: FlexColumnWidth(1),
           2: FlexColumnWidth(1),
           3: FlexColumnWidth(1),
-          4: FlexColumnWidth(1),
+          4: FlexColumnWidth(2),
         },
         defaultVerticalAlignment: TableCellVerticalAlignment.middle,
         children: [
@@ -269,24 +306,22 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
               _header('Full'),
               _header('Half'),
               _header('Absent'),
-              _header('OT'),
+              _header('OT / Early'),
             ],
           ),
           for (final e in employees)
             TableRow(
-              decoration: BoxDecoration(
-                color: _overtimePanelEmployeeId == e.id
-                    ? AppColors.primary.withValues(alpha: 0.06)
-                    : null,
-                border: const Border(
-                    bottom: BorderSide(color: AppColors.border)),
+              decoration: const BoxDecoration(
+                border:
+                    Border(bottom: BorderSide(color: AppColors.border)),
               ),
               children: [
                 Padding(
                   padding:
                       const EdgeInsets.symmetric(vertical: 10, horizontal: 8),
                   child: Text(e.name,
-                      style: const TextStyle(fontSize: 13),
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.w600),
                       overflow: TextOverflow.ellipsis),
                 ),
                 _radioCell(e, _RowStatus.full),
@@ -315,127 +350,43 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
     return _RadioDot(
       selected: selected,
       color: _statusColor(status),
-      onTap: () => setState(() {
-        _statusMap[e.id!] = status;
-        // Absent days carry no overtime — drop any logged OT and close its panel.
-        if (status == _RowStatus.absent) {
-          _overtimeMap.remove(e.id);
-          if (_overtimePanelEmployeeId == e.id) _overtimePanelEmployeeId = null;
-        }
-      }),
+      onTap: () => _setStatus(e, status),
     );
   }
 
-  /// The independent OT toggle. Only meaningful on a worked day, so it's shown
-  /// only when the row is Full or Half; for Absent the cell is blank. Tapping it
-  /// opens the hours panel. A filled dot + "Nh" caption means OT is logged.
+  /// The signed overtime stepper: `−  +1.5h  +`. Only meaningful on a worked day,
+  /// so for an Absent row the cell is blank. Positive (accent) = overtime worked,
+  /// negative (expense red) = early-leave; both net into the month's payroll.
   Widget _overtimeCell(Employee e) {
     final status = _statusMap[e.id] ?? _RowStatus.full;
     if (status == _RowStatus.absent) return const SizedBox.shrink();
     final hours = _overtimeMap[e.id] ?? 0;
-    final hasOt = hours > 0;
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _RadioDot(
-          selected: hasOt || _overtimePanelEmployeeId == e.id,
-          color: AppColors.accent,
-          onTap: () => _openOvertimePanel(e),
-        ),
-        if (hasOt)
-          Text('${Formatters.plain(hours)}h',
-              style: const TextStyle(
-                  fontSize: 10,
-                  color: AppColors.accent,
-                  fontWeight: FontWeight.bold)),
-      ],
-    );
-  }
-
-  Widget _buildOvertimePanel(List<Employee> employees) {
-    final emp =
-        employees.firstWhere((e) => e.id == _overtimePanelEmployeeId);
-    final hours = double.tryParse(_overtimeController.text.trim()) ?? 0;
-    final pay = hours * emp.overtimeRate;
-
-    return Container(
-      decoration: const BoxDecoration(
-        color: AppColors.cardLight,
-        border: Border(left: BorderSide(color: AppColors.border)),
-        boxShadow: [
-          BoxShadow(color: Colors.black12, blurRadius: 4, offset: Offset(-2, 0)),
-        ],
-      ),
-      padding: const EdgeInsets.all(12),
-      child: Column(
-        // Size to content and top-align (the parent Row is now top-aligned, so
-        // a Spacer here would have no bounded height to expand into).
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
+    final color = hours > 0
+        ? AppColors.accent
+        : (hours < 0 ? AppColors.expense : AppColors.textHint);
+    final label =
+        hours == 0 ? '0h' : '${hours > 0 ? '+' : ''}${Formatters.plain(hours)}h';
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(emp.name,
-              style: const TextStyle(
-                  fontWeight: FontWeight.bold, fontSize: 13),
-              overflow: TextOverflow.ellipsis),
-          const Divider(),
-          const SizedBox(height: 4),
-          const Text('Overtime hours:',
-              style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-          const SizedBox(height: 6),
-          TextField(
-            controller: _overtimeController,
-            autofocus: true,
-            keyboardType:
-                const TextInputType.numberWithOptions(decimal: true),
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
-            ],
-            decoration: const InputDecoration(
-              suffixText: 'hrs',
-              border: OutlineInputBorder(),
-              contentPadding:
-                  EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-              isDense: true,
-            ),
-            style: const TextStyle(fontSize: 14),
-            onChanged: (_) => setState(() {}),
+          _StepButton(
+            icon: Icons.remove,
+            onTap: () => _adjustOvertime(e, -_otStep),
           ),
-          const SizedBox(height: 8),
-          if (hours > 0) ...[
-            Text(
-              emp.overtimeRate > 0
-                  ? '@ ${Formatters.currency(emp.overtimeRate)}/hr'
-                  : 'No OT rate set',
-              style:
-                  const TextStyle(fontSize: 11, color: AppColors.textSecondary),
-            ),
-            const SizedBox(height: 2),
-            Text('= ${Formatters.currency(pay)}',
-                style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.paid)),
-          ],
-          const SizedBox(height: 16),
           SizedBox(
-            width: double.infinity,
-            child: ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 8),
-              ),
-              onPressed: _confirmOvertime,
-              child: const Text('Confirm'),
+            width: 42,
+            child: Text(
+              label,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                  fontSize: 12, fontWeight: FontWeight.bold, color: color),
             ),
           ),
-          const SizedBox(height: 6),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton(
-              onPressed: _cancelOvertime,
-              child: const Text('Cancel'),
-            ),
+          _StepButton(
+            icon: Icons.add,
+            onTap: () => _adjustOvertime(e, _otStep),
           ),
         ],
       ),
@@ -450,7 +401,7 @@ class _AttendanceScreenState extends ConsumerState<AttendanceScreen> {
 }
 
 /// A compact, tappable radio indicator. Used instead of the Material [Radio] so
-/// four selectable cells can live in one [TableRow] without a RadioGroup, and to
+/// three selectable cells can live in one [TableRow] without a RadioGroup, and to
 /// stay narrow enough for a 360px-wide screen.
 class _RadioDot extends StatelessWidget {
   final bool selected;
@@ -492,6 +443,32 @@ class _RadioDot extends StatelessWidget {
                 : null,
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A small round − / + button for the overtime stepper. Kept compact so the
+/// `−  value  +` trio fits the narrow OT column on a phone.
+class _StepButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _StepButton({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return InkResponse(
+      onTap: onTap,
+      radius: 18,
+      child: Container(
+        width: 26,
+        height: 26,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: AppColors.border),
+          color: AppColors.cardLight,
+        ),
+        child: Icon(icon, size: 16, color: AppColors.primary),
       ),
     );
   }

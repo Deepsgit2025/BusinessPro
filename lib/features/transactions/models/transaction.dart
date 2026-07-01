@@ -30,6 +30,14 @@ class Transaction {
   final String transactionType;
   final String transactionNumber;
   final String? referenceNumber;
+  /// Free-text customer/supplier name typed directly on the document, used when
+  /// no [partyId] is set (a one-off party not saved to the party list). When a
+  /// party IS linked, [partyName] (the joined name) is authoritative.
+  final String? billingName;
+  /// Free-text GSTIN / address for a one-off (no-party) document, mirroring
+  /// [billingName]. Null when a party is linked (read off the party instead).
+  final String? billingGstin;
+  final String? billingAddress;
   final String transactionDate; // ISO 8601
   final String? dueDate;
   final double subtotal;
@@ -81,6 +89,9 @@ class Transaction {
     required this.transactionType,
     required this.transactionNumber,
     this.referenceNumber,
+    this.billingName,
+    this.billingGstin,
+    this.billingAddress,
     required this.transactionDate,
     this.dueDate,
     this.subtotal = 0,
@@ -118,6 +129,15 @@ class Transaction {
     this.accountName,
   });
 
+  /// Name to show for the other party: the linked party's joined name when one
+  /// exists, otherwise the free-text [billingName] typed on a one-off document.
+  String? get displayPartyName =>
+      (partyName != null && partyName!.trim().isNotEmpty)
+          ? partyName
+          : (billingName != null && billingName!.trim().isNotEmpty)
+              ? billingName
+              : null;
+
   bool get isCancelled => status == 'cancelled';
   bool get isPaid => paymentStatus == 'paid';
   bool get isUnpaid => paymentStatus == 'unpaid';
@@ -133,6 +153,9 @@ class Transaction {
         transactionType: (m['transaction_type'] as String?) ?? 'sale',
         transactionNumber: (m['transaction_number'] as String?) ?? '',
         referenceNumber: m['reference_number'] as String?,
+        billingName: m['billing_name'] as String?,
+        billingGstin: m['billing_gstin'] as String?,
+        billingAddress: m['billing_address'] as String?,
         transactionDate: (m['transaction_date'] as String?) ?? '',
         dueDate: m['due_date'] as String?,
         subtotal: (m['subtotal'] as num?)?.toDouble() ?? 0,
@@ -182,6 +205,9 @@ class Transaction {
         'transaction_type': transactionType,
         'transaction_number': transactionNumber,
         'reference_number': referenceNumber,
+        'billing_name': billingName,
+        'billing_gstin': billingGstin,
+        'billing_address': billingAddress,
         'transaction_date': transactionDate,
         'due_date': dueDate,
         'subtotal': subtotal,
