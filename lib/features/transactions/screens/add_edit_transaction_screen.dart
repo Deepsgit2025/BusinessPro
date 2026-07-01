@@ -384,6 +384,20 @@ class _AddEditTransactionScreenState
       _supplyState = savedSupply;
     }
     _isCash = txn.paymentStatus == 'paid';
+    // On edit (not duplicate), restore the payment so re-saving preserves it and
+    // re-opening shows the real current state: pre-fill Received with the amount
+    // already paid (partial), and re-use the original account / mode. Without
+    // this, editing a partial invoice would silently reset it to unpaid.
+    if (copyNumber) {
+      if (!_isCash && txn.paidAmount > 0) {
+        _received.text = Formatters.plain(txn.paidAmount);
+      }
+      final pays = await repo.getPayments(sourceId);
+      if (pays.isNotEmpty) {
+        _accountId = pays.first.accountId;
+        _paymentModeId = pays.first.paymentModeId;
+      }
+    }
 
     for (final it in items) {
       final tiers =
@@ -727,6 +741,25 @@ class _AddEditTransactionScreenState
     }
 
     setState(() => _saving = true);
+
+    // #11: On a purchase, promote any free-text line (no linked item) into a
+    // real product so the purchase moves stock and the item appears in
+    // Inventory. Find-or-create by name; set the line's itemId so the stock
+    // trigger fires on insert. Purchases only (buying adds stock).
+    if (widget.mode == TxnFormMode.purchase) {
+      final itemRepo = ItemRepository();
+      for (final l in _lines) {
+        if (l.itemId == null && l.itemName.trim().isNotEmpty) {
+          l.itemId = await itemRepo.findOrCreateProductByName(
+            l.itemName,
+            purchasePrice: l.unitPrice,
+            taxRateId: l.taxRateId,
+            unitName: l.unitName,
+          );
+        }
+      }
+    }
+
     final totals = _totals;
     final repo = ref.read(transactionRepositoryProvider);
 
@@ -819,7 +852,11 @@ class _AddEditTransactionScreenState
       igstAmount: totals.igstAmount,
       roundOff: totals.roundOff,
       totalAmount: totals.total,
-      status: _isEstimate ? 'draft' : 'active',
+      // Estimates are 'active' (open) until explicitly converted to a sale. They
+      // were previously saved as 'draft', which the doc list rendered as
+      // "Converted" (only 'active' offers a Convert action) — so a freshly-saved
+      // estimate wrongly showed as already converted.
+      status: 'active',
       notes: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
       ewayBillNumber: _isSale ? _trimOrNull(_ewayBill) : null,
       // The State of Supply (the tax-wired dropdown that decides IGST vs
@@ -845,7 +882,15 @@ class _AddEditTransactionScreenState
     try {
       int savedId;
       if (_isEdit) {
-        await repo.updateTransaction(txn, items);
+        // Pass the amount the form now shows as received so an edit can CHANGE
+        // the payment (e.g. paid → partial), not just preserve the old paid sum.
+        await repo.updateTransaction(
+          txn,
+          items,
+          receivedAmount: received,
+          accountId: _accountId,
+          paymentModeId: _paymentModeId,
+        );
         savedId = widget.existingId!;
       } else {
         Payment? payment;
@@ -985,7 +1030,13 @@ class _AddEditTransactionScreenState
 
       int savedId;
       if (_isEdit) {
-        await repo.updateTransaction(txn, items);
+        await repo.updateTransaction(
+          txn,
+          items,
+          receivedAmount: paid,
+          accountId: _accountId,
+          paymentModeId: _paymentModeId,
+        );
         savedId = widget.existingId!;
       } else {
         Payment? payment;
@@ -2467,6 +2518,26 @@ class _AddEditTransactionScreenState
           keyboardType: TextInputType.phone,
           decoration: const InputDecoration(
             hintText: 'Phone Number',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        // GSTIN + Address for a one-off (no-party) document — persisted via
+        // billingGstin / billingAddress, or prefilled from a picked party.
+        // (These were previously only on the wide/desktop layout.)
+        const SizedBox(height: 12),
+        TextField(
+          controller: _gstin,
+          textCapitalization: TextCapitalization.characters,
+          decoration: const InputDecoration(
+            hintText: 'GSTIN',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _address,
+          decoration: const InputDecoration(
+            hintText: 'Address',
             border: OutlineInputBorder(),
           ),
         ),

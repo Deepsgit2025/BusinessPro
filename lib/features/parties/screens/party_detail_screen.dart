@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../../../core/utils/formatters.dart';
+import '../../transactions/screens/sale_detail_screen.dart';
 import '../models/party.dart';
 import '../providers/party_providers.dart';
 import 'add_edit_party_screen.dart';
@@ -42,8 +43,9 @@ class _PartyDetailView extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final balance = party.netBalance;
-    final isToCollect = balance >= 0;
-    final balanceColor = isToCollect ? AppColors.income : AppColors.expense;
+    final balanceColor = party.isSettled
+        ? AppColors.textSecondary
+        : (balance >= 0 ? AppColors.income : AppColors.expense);
 
     return DefaultTabController(
       length: 2,
@@ -138,7 +140,7 @@ class _HeaderCard extends StatelessWidget {
                             color: balanceColor,
                             fontSize: 18,
                             fontWeight: FontWeight.bold)),
-                    Text(balance >= 0 ? 'To Collect' : 'To Pay',
+                    Text(party.balanceLabel,
                         style: TextStyle(color: balanceColor, fontSize: 12)),
                   ],
                 ),
@@ -215,8 +217,24 @@ class _TransactionsTab extends ConsumerWidget {
             final type = (t['transaction_type'] as String?) ?? '';
             final total = (t['total_amount'] as num?)?.toDouble() ?? 0;
             final bal = (t['balance_amount'] as num?)?.toDouble() ?? 0;
+            final id = t['id'] as int?;
             return ListTile(
               dense: true,
+              onTap: id == null
+                  ? null
+                  : () async {
+                      await Navigator.push(
+                        context,
+                        MaterialPageRoute(
+                          builder: (_) =>
+                              SaleDetailScreen(transactionId: id),
+                        ),
+                      );
+                      // Balances / lists may have changed (edit, payment,
+                      // delete) — refresh this party's views on return.
+                      ref.invalidate(partyDetailProvider(partyId));
+                      ref.invalidate(partyTransactionsProvider(partyId));
+                    },
               title: Text(t['transaction_number']?.toString() ??
                   _typeLabel(type)),
               subtitle: Text(
@@ -247,12 +265,13 @@ class _StatementTab extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final txnsAsync = ref.watch(partyTransactionsProvider(party.id!));
-    return txnsAsync.when(
+    final ledgerAsync = ref.watch(partyLedgerProvider(party.id!));
+    return ledgerAsync.when(
       loading: () => const Center(child: CircularProgressIndicator()),
       error: (e, _) => Center(child: Text('Error: $e')),
-      data: (txns) {
-        // Opening balance row, then a running ledger.
+      data: (events) {
+        // Opening balance row, then a running ledger folded from the double-entry
+        // events (bills at full total + real payments), oldest → newest.
         double running = party.openingBalanceType == 'debit'
             ? party.openingBalance
             : -party.openingBalance;
@@ -267,22 +286,22 @@ class _StatementTab extends ConsumerWidget {
           ),
         ];
 
-        // Oldest → newest for a running balance.
-        for (final t in txns.reversed) {
-          final type = (t['transaction_type'] as String?) ?? '';
-          final total = (t['total_amount'] as num?)?.toDouble() ?? 0;
-          // Sales increase what they owe (debit); purchases the opposite.
-          final isDebit = type == 'sale' || type == 'payment_out';
-          if (isDebit) {
-            running += total;
-          } else {
-            running -= total;
-          }
+        for (final e in events) {
+          final type = (e['transaction_type'] as String?) ?? '';
+          final kind = (e['kind'] as String?) ?? 'bill';
+          final debit = (e['debit'] as num?)?.toDouble() ?? 0;
+          final credit = (e['credit'] as num?)?.toDouble() ?? 0;
+          // Debit raises To Collect, credit raises To Pay.
+          running += debit - credit;
+          final number = e['description']?.toString() ?? _typeLabel(type);
           rows.add(_LedgerRow(
-            date: Formatters.date(t['transaction_date'] as String?),
-            description: t['transaction_number']?.toString() ?? _typeLabel(type),
-            debit: isDebit ? total : 0,
-            credit: isDebit ? 0 : total,
+            date: Formatters.date(e['date'] as String?),
+            // Distinguish a payment against a bill from the bill itself.
+            description: kind == 'payment'
+                ? '$number · ${_paymentLabel(type)}'
+                : number,
+            debit: debit,
+            credit: credit,
             balance: running,
           ));
         }
@@ -299,6 +318,13 @@ class _StatementTab extends ConsumerWidget {
     );
   }
 }
+
+/// Short caption for a payment ledger row, by the underlying document type.
+String _paymentLabel(String type) => switch (type) {
+      'payment_in' => 'Payment In',
+      'payment_out' => 'Payment Out',
+      _ => 'Paid',
+    };
 
 class _LedgerRow {
   final String date;

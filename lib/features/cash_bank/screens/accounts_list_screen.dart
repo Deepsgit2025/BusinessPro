@@ -78,6 +78,21 @@ class AccountsListScreen extends ConsumerWidget {
                                 accountId: accounts[i].id!),
                           ),
                         ),
+                        onEdit: () async {
+                          final r = await Navigator.push<bool>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) =>
+                                  AddAccountScreen(account: accounts[i]),
+                            ),
+                          );
+                          if (r == true) {
+                            ref.invalidate(accountListProvider);
+                            ref.invalidate(totalBalanceProvider);
+                          }
+                        },
+                        onDelete: () =>
+                            _confirmDelete(context, ref, accounts[i], accounts),
                       ),
                     ),
             ),
@@ -118,7 +133,14 @@ class _TotalHeader extends StatelessWidget {
 class _AccountCard extends StatelessWidget {
   final Account account;
   final VoidCallback onTap;
-  const _AccountCard({required this.account, required this.onTap});
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+  const _AccountCard({
+    required this.account,
+    required this.onTap,
+    required this.onEdit,
+    required this.onDelete,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -180,12 +202,58 @@ class _AccountCard extends StatelessWidget {
                       : AppColors.textPrimary,
                 ),
               ),
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.more_vert,
+                    size: 20, color: AppColors.textSecondary),
+                onSelected: (v) => v == 'edit' ? onEdit() : onDelete(),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'edit', child: Text('Edit')),
+                  PopupMenuItem(value: 'delete', child: Text('Delete')),
+                ],
+              ),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+/// Soft-deletes an account after confirmation. Blocks removing the last cash
+/// account so the "exactly one cash account" rule always holds.
+Future<void> _confirmDelete(
+  BuildContext context,
+  WidgetRef ref,
+  Account account,
+  List<Account> all,
+) async {
+  if (account.accountType == 'cash' &&
+      all.where((a) => a.accountType == 'cash').length <= 1) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('You must keep one cash account.')),
+    );
+    return;
+  }
+  final ok = await showDialog<bool>(
+    context: context,
+    builder: (_) => AlertDialog(
+      title: const Text('Delete account?'),
+      content: Text('Remove "${account.name}"? Its past entries stay, but the '
+          'account will no longer appear here.'),
+      actions: [
+        TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel')),
+        TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Delete')),
+      ],
+    ),
+  );
+  if (ok != true || !context.mounted) return;
+  await ref.read(accountRepoProvider).softDelete(account.id!);
+  ref.invalidate(accountListProvider);
+  ref.invalidate(totalBalanceProvider);
 }
 
 class _Tag extends StatelessWidget {

@@ -6,6 +6,7 @@ import 'package:printing/printing.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/database/database_helper.dart';
 import '../../../core/utils/formatters.dart';
+import '../../cash_bank/repositories/account_repository.dart';
 import '../../parties/models/party.dart';
 import '../../parties/repositories/party_repository.dart';
 import '../models/payment.dart';
@@ -46,6 +47,10 @@ class _AddPaymentOutScreenState extends ConsumerState<AddPaymentOutScreen> {
   double _partyBalance = 0;
   int? _paymentModeId;
   int? _accountId;
+  /// The linked UPI account (from the business profile), if any. When the user
+  /// picks the UPI payment mode, Pay-From defaults to this so UPI money is
+  /// logged in the UPI card.
+  int? _upiAccountId;
   bool _loading = true;
   bool _saving = false;
 
@@ -58,6 +63,8 @@ class _AddPaymentOutScreenState extends ConsumerState<AddPaymentOutScreen> {
   bool get _isEdit => widget.existingId != null;
 
   Future<void> _bootstrap() async {
+    _upiAccountId =
+        await AccountRepository().linkedAccountId('linked_upi_account_id');
     if (_isEdit) {
       await _loadExisting(widget.existingId!);
     } else {
@@ -65,6 +72,23 @@ class _AddPaymentOutScreenState extends ConsumerState<AddPaymentOutScreen> {
       _autoNumber = _receiptNumber;
     }
     if (mounted) setState(() => _loading = false);
+  }
+
+  /// When the chosen mode is UPI and a UPI account is linked, default Pay-From to
+  /// it (unless the user is editing, where the saved account is authoritative).
+  void _onModeChanged(int? modeId, List<dynamic> modes) {
+    setState(() {
+      _paymentModeId = modeId;
+      for (final m in modes) {
+        if (m.id == modeId) {
+          if ((m.name as String).toUpperCase() == 'UPI' &&
+              _upiAccountId != null) {
+            _accountId = _upiAccountId;
+          }
+          break;
+        }
+      }
+    });
   }
 
   /// Lets the user override the voucher number (e.g. `K/100`). The override is
@@ -516,8 +540,7 @@ class _AddPaymentOutScreenState extends ConsumerState<AddPaymentOutScreen> {
                                 .map((m) => DropdownMenuItem(
                                     value: m.id, child: Text(m.name)))
                                 .toList(),
-                            onChanged: (v) =>
-                                setState(() => _paymentModeId = v),
+                            onChanged: (v) => _onModeChanged(v, list),
                           ),
                         ],
                       ),

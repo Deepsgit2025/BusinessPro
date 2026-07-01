@@ -1,7 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../cash_bank/models/account.dart';
-import '../../cash_bank/repositories/account_repository.dart';
+import '../../cash_bank/providers/account_providers.dart' as cashbank;
 import '../models/expense_category.dart';
 import '../models/payment.dart';
 import '../models/payment_mode.dart';
@@ -10,6 +10,7 @@ import '../models/transaction_item.dart';
 import '../repositories/transaction_repository.dart';
 import '../repositories/txn_meta_repository.dart';
 import '../../inventory/providers/inventory_providers.dart' as inventory;
+import '../../parties/providers/party_providers.dart' as parties;
 import '../../../services/sync/sync_providers.dart';
 
 // ── Repositories ────────────────────────────────────────────────────────────
@@ -17,16 +18,19 @@ final transactionRepositoryProvider =
     Provider<TransactionRepository>((ref) => TransactionRepository());
 final txnMetaRepositoryProvider =
     Provider<TxnMetaRepository>((ref) => TxnMetaRepository());
-final accountRepositoryProvider =
-    Provider<AccountRepository>((ref) => AccountRepository());
 
 // ── Master data ─────────────────────────────────────────────────────────────
 final paymentModesProvider = FutureProvider<List<PaymentMode>>((ref) async {
   return ref.watch(txnMetaRepositoryProvider).paymentModes();
 });
 
+/// Cash / bank / wallet accounts for the payment selectors. Delegates to the
+/// cash_bank [cashbank.accountListProvider] so there is a SINGLE source of truth
+/// and cache — adding a bank account in Cash & Bank (which invalidates that
+/// provider) immediately refreshes every "Pay From" / "Deposit to" dropdown,
+/// rather than these screens reading a separate, stale copy.
 final accountsProvider = FutureProvider<List<Account>>((ref) async {
-  return ref.watch(accountRepositoryProvider).getAccounts();
+  return ref.watch(cashbank.accountListProvider.future);
 });
 
 /// Expense or income categories, keyed by 'expense' / 'income'.
@@ -344,7 +348,17 @@ void invalidateTransactionData(Ref ref) {
   ref.invalidate(recentTransactionsProvider);
   ref.invalidate(outstandingReceivablesProvider);
   ref.invalidate(outstandingPayablesProvider);
-  ref.invalidate(accountsProvider);
+  // Account balances move via payment triggers — refresh the single account
+  // source (which [accountsProvider] delegates to) and the total.
+  ref.invalidate(cashbank.accountListProvider);
+  ref.invalidate(cashbank.totalBalanceProvider);
+  // Party balances + per-party transaction/statement views derive from
+  // transactions. Invalidate the list and the (.family) detail/transactions so
+  // an already-viewed party reflects a new sale / purchase / payment.
+  ref.invalidate(parties.partyListProvider);
+  ref.invalidate(parties.partyDetailProvider);
+  ref.invalidate(parties.partyTransactionsProvider);
+  ref.invalidate(parties.partyLedgerProvider);
   // Inventory views derive their stock/journey from transactions. Invalidate
   // the list and the per-item (.family) journey/header so an open inventory
   // screen reflects the write immediately.
@@ -376,7 +390,16 @@ extension TransactionDataRefresh on WidgetRef {
     invalidate(recentTransactionsProvider);
     invalidate(outstandingReceivablesProvider);
     invalidate(outstandingPayablesProvider);
-    invalidate(accountsProvider);
+    // Account balances move via payment triggers — refresh the single account
+    // source (which [accountsProvider] delegates to) and the total.
+    invalidate(cashbank.accountListProvider);
+    invalidate(cashbank.totalBalanceProvider);
+    // Party balances + per-party transaction/statement views derive from
+    // transactions — refresh them so an already-viewed party reflects the write.
+    invalidate(parties.partyListProvider);
+    invalidate(parties.partyDetailProvider);
+    invalidate(parties.partyTransactionsProvider);
+    invalidate(parties.partyLedgerProvider);
     // Inventory views (list + per-item journey/header) derive from transactions.
     invalidate(inventory.inventoryListProvider);
     invalidate(inventory.inventoryJourneyProvider);

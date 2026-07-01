@@ -40,3 +40,10 @@ final partyTransactionsProvider =
   final repo = ref.watch(partyRepositoryProvider);
   return repo.transactions(id);
 });
+
+/// Double-entry ledger events (bills + real payments) for the Statement tab.
+final partyLedgerProvider =
+    FutureProvider.family<List<Map<String, dynamic>>, int>((ref, id) async {
+  final repo = ref.watch(partyRepositoryProvider);
+  return repo.ledger(id);
+});

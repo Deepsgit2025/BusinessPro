@@ -1,10 +1,12 @@
 // Regression test for editing a transaction that already has a payment.
 //
 // updateTransaction now ALWAYS allows editing: any recorded payment is reversed
-// (account refunded) and re-applied for the previously-paid amount, clamped to
-// the new total. Case A asserts a paid invoice can be edited and the prior
-// payment is preserved (and the surplus refunded when the total drops); Case B
-// asserts the unpaid path still works.
+// (account refunded) and a NEW payment for the caller-supplied receivedAmount
+// (clamped to the new total) is applied. Callers preserve the old paid amount by
+// passing it back as receivedAmount. Case A edits a paid invoice down and passes
+// the prior paid (clamped); Case B is the unpaid path; Case C is the #8 fix —
+// editing a fully-paid invoice down to a partial received amount actually
+// persists as partial.
 //
 // This exercises the REAL TransactionRepository against a REAL database. The
 // repository hardcodes its DB handle via DatabaseHelper.database (→ _initDb →
@@ -187,8 +189,11 @@ void main() {
       totalAmount: 600,
     );
 
+    // Preserve the prior paid amount by passing it back (1000); it clamps to the
+    // new 600 total, and the 400 surplus is refunded to the account.
     await expectLater(
-      repo.updateTransaction(editedTxn, [editedLine]),
+      repo.updateTransaction(editedTxn, [editedLine],
+          receivedAmount: 1000, accountId: ids.accountId),
       completes,
     );
 
@@ -233,9 +238,9 @@ void main() {
       totalAmount: 600,
     );
 
-    // Must NOT throw.
+    // Must NOT throw. No payment on this doc → pass 0 received.
     await expectLater(
-      repo.updateTransaction(editedTxn, [editedLine]),
+      repo.updateTransaction(editedTxn, [editedLine], receivedAmount: 0),
       completes,
     );
 
@@ -243,5 +248,47 @@ void main() {
     final after = await snapshot(ids.txnId, ids.itemId, ids.accountId);
     expect(after.lines, 1);
     expect(after.status, 'unpaid'); // edit resets payment fields to unpaid
+  });
+
+  test(
+      'Case C — #8: editing a fully-paid invoice down to a partial received '
+      'amount persists as partial', () async {
+    final repo = TransactionRepository();
+    final ids = await createSale(repo, withPayment: true); // total 1000, paid 1000
+
+    final before = await snapshot(ids.txnId, ids.itemId, ids.accountId);
+    expect(before.paid, 1000);
+    expect(before.status, 'paid');
+    expect(before.balance, 1000);
+
+    // Keep the same 1000 total but change the received amount to 100. Before the
+    // fix this re-applied the old 1000 and stayed "paid"; now it must persist as
+    // partial with paid = 100.
+    final editedTxn = model.Transaction(
+      id: ids.txnId,
+      transactionType: model.TxnTypes.sale,
+      transactionNumber: 'INV-EG-1',
+      transactionDate: '2026-01-01',
+      accountId: ids.accountId,
+      totalAmount: 1000,
+    );
+    final editedLine = TransactionItem(
+      itemId: ids.itemId,
+      itemName: 'Edit-Guard Item',
+      quantity: 5,
+      conversionFactor: 1,
+      unitPrice: 200,
+      totalAmount: 1000,
+    );
+
+    await repo.updateTransaction(editedTxn, [editedLine],
+        receivedAmount: 100, accountId: ids.accountId);
+
+    final after = await snapshot(ids.txnId, ids.itemId, ids.accountId);
+    expect(after.paid, 100);
+    expect(after.status, 'partial');
+    // Account: +1000 (initial) − 1000 (reverse) + 100 (new) = 100.
+    expect(after.balance, 100);
+    expect(after.stock, 45); // 50 − 5, unchanged quantity
   });
 }

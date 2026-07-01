@@ -189,6 +189,64 @@ class ItemRepository {
     });
   }
 
+  /// Finds an active product by exact (case-insensitive) name, or creates a new
+  /// product item and returns its id. Used to promote a free-text purchase line
+  /// into a real inventory item so the purchase moves stock and the item shows
+  /// up in Inventory. A base unit tier is created automatically by [insert].
+  Future<int> findOrCreateProductByName(
+    String name, {
+    double purchasePrice = 0,
+    double salePrice = 0,
+    int? taxRateId,
+    String? unitName,
+  }) async {
+    final db = await DatabaseHelper.database;
+    final trimmed = name.trim();
+    final existing = await db.query(
+      'items',
+      columns: ['id'],
+      where: 'business_id = ? AND is_active = 1 AND LOWER(name) = LOWER(?)',
+      whereArgs: [_businessId, trimmed],
+      limit: 1,
+    );
+    if (existing.isNotEmpty) return existing.first['id'] as int;
+
+    // Resolve a unit: match the line's unit name/short if given, else the first.
+    int unitId = 1;
+    String unitShort = 'pcs';
+    final units = await db.query('units',
+        columns: ['id', 'short_name', 'name'],
+        where: 'business_id = ?',
+        whereArgs: [_businessId],
+        orderBy: 'id ASC');
+    if (units.isNotEmpty) {
+      var chosen = units.first;
+      final ln = (unitName ?? '').trim().toLowerCase();
+      if (ln.isNotEmpty) {
+        for (final r in units) {
+          if ((r['name'] as String).toLowerCase() == ln ||
+              (r['short_name'] as String).toLowerCase() == ln) {
+            chosen = r;
+            break;
+          }
+        }
+      }
+      unitId = chosen['id'] as int;
+      unitShort = chosen['short_name'] as String;
+    }
+
+    return insert(Item(
+      name: trimmed,
+      itemType: 'product',
+      unitId: unitId,
+      unitShort: unitShort,
+      purchasePrice: purchasePrice,
+      salePrice: salePrice,
+      taxRateId: taxRateId,
+      openingStock: 0,
+    ));
+  }
+
   Future<void> softDelete(int id) async {
     final db = await DatabaseHelper.database;
     await db.update(

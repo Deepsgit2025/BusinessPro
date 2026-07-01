@@ -62,6 +62,18 @@ class Party {
   bool get isCustomer => partyType == 'customer' || partyType == 'both';
   bool get isSupplier => partyType == 'supplier' || partyType == 'both';
 
+  /// True when the net balance is effectively zero (nothing due either way).
+  bool get isSettled => netBalance.abs() < 0.01;
+
+  /// The "To Collect" / "To Pay" caption for the current net balance. At a zero
+  /// balance the direction follows the party type — a pure supplier reads
+  /// "To Pay", a customer or 'both' party reads "To Collect" — instead of always
+  /// defaulting to "To Collect". Otherwise it follows the balance sign.
+  String get balanceLabel {
+    if (isSettled) return (isSupplier && !isCustomer) ? 'To Pay' : 'To Collect';
+    return netBalance >= 0 ? 'To Collect' : 'To Pay';
+  }
+
   factory Party.fromMap(Map<String, dynamic> m) => Party(
         id: m['id'] as int?,
         businessId: (m['business_id'] as int?) ?? 1,

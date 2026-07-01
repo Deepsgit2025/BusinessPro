@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:printing/printing.dart';
 
 import '../../../core/constants/app_colors.dart';
 import '../models/inventory_item.dart';
 import '../providers/inventory_providers.dart';
 import '../repositories/inventory_repository.dart';
+import '../services/inventory_pdf_service.dart';
 import '../widgets/inventory_item_card.dart';
 import 'item_journey_screen.dart';
 
@@ -34,6 +36,27 @@ class _InventoryListScreenState extends ConsumerState<InventoryListScreen> {
         builder: (_) => ItemJourneyScreen(itemId: item.id, itemName: item.name),
       ),
     );
+  }
+
+  /// Builds a stock-summary PDF of the current (sorted/filtered) inventory and
+  /// opens the system print / share dialog. Works on Android + Windows.
+  Future<void> _printInventory() async {
+    final items = await ref.read(inventoryListProvider.future);
+    if (!mounted) return;
+    if (items.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No inventory items to print')),
+      );
+      return;
+    }
+    try {
+      await Printing.layoutPdf(onLayout: (_) => InventoryPdfService.build(items));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Could not print: $e')));
+      }
+    }
   }
 
   static const _sortLabels = {
@@ -66,6 +89,12 @@ class _InventoryListScreenState extends ConsumerState<InventoryListScreen> {
               )
             : const Text('Inventory'),
         actions: [
+          if (!_searching)
+            IconButton(
+              icon: const Icon(Icons.print_outlined),
+              tooltip: 'Print inventory',
+              onPressed: _printInventory,
+            ),
           IconButton(
             icon: Icon(_searching ? Icons.close : Icons.search),
             onPressed: () {

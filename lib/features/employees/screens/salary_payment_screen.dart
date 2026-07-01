@@ -233,7 +233,15 @@ class _SalaryPaymentScreenState extends ConsumerState<SalaryPaymentScreen> {
             inputFormatters: [
               FilteringTextInputFormatter.allow(RegExp(r'[0-9.]')),
             ],
-            onChanged: (_) => setState(() {}),
+            // Entering an advance credit auto-fills "Cash to employee" with the
+            // remainder (gross − credit) so the payout is fully allocated by
+            // default. The user can still edit cash afterwards.
+            onChanged: (v) {
+              final credit = double.tryParse(v.trim()) ?? 0;
+              final cash = (gross - credit).clamp(0.0, gross);
+              _cash.text = Formatters.plain(cash);
+              setState(() {});
+            },
             decoration: const InputDecoration(
               labelText: 'Credit to advance',
               prefixText: '₹ ',

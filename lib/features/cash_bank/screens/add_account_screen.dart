@@ -93,6 +93,12 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
   @override
   Widget build(BuildContext context) {
     final isBank = _type == 'bank';
+    // Only one cash account is allowed. Offer "Cash" as a type only when no
+    // other active cash account exists (or when editing that cash account).
+    final existing =
+        ref.watch(accountListProvider).valueOrNull ?? const <Account>[];
+    final hasOtherCash = existing
+        .any((a) => a.accountType == 'cash' && a.id != widget.account?.id);
     return Scaffold(
       appBar: AppBar(title: Text(widget.isEdit ? 'Edit Account' : 'Add Account')),
       body: Form(
@@ -115,10 +121,11 @@ class _AddAccountScreenState extends ConsumerState<AddAccountScreen> {
                     color: Colors.grey)),
             const SizedBox(height: 8),
             SegmentedButton<String>(
-              segments: const [
-                ButtonSegment(value: 'cash', label: Text('Cash')),
-                ButtonSegment(value: 'bank', label: Text('Bank')),
-                ButtonSegment(value: 'wallet', label: Text('Wallet')),
+              segments: [
+                if (!hasOtherCash)
+                  const ButtonSegment(value: 'cash', label: Text('Cash')),
+                const ButtonSegment(value: 'bank', label: Text('Bank')),
+                const ButtonSegment(value: 'wallet', label: Text('Wallet')),
               ],
               selected: {_type},
               onSelectionChanged: (s) => setState(() => _type = s.first),

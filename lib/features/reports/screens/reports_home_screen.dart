@@ -56,7 +56,9 @@ class ReportsHomeScreen extends StatelessWidget {
           physics: const NeverScrollableScrollPhysics(),
           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
             crossAxisCount: 3,
-            mainAxisExtent: 96,
+            // Tall enough for two-line labels ("Purchase\nReport", etc.):
+            // 20px padding + 52 icon + 6 gap + ~29 for two text lines.
+            mainAxisExtent: 112,
             mainAxisSpacing: 4,
           ),
           itemCount: cards.length,

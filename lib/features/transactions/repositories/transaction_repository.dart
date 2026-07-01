@@ -271,36 +271,34 @@ class TransactionRepository {
     return rows.first['status'] != 'cancelled';
   }
 
-  /// Replaces a transaction's header + line items, preserving any amount already
-  /// paid. Deleting the old line rows fires no stock trigger (triggers are AFTER
-  /// INSERT only), so we manually reverse the old lines' stock first, then
-  /// re-insert the new lines (which re-applies stock via triggers).
+  /// Replaces a transaction's header + line items and re-applies the payment as
+  /// specified by the edit form. Deleting the old line rows fires no stock
+  /// trigger (triggers are AFTER INSERT only), so we manually reverse the old
+  /// lines' stock first, then re-insert the new lines (which re-applies stock
+  /// via triggers).
   ///
-  /// Existing payments are reversed (refunding the account) and a single
-  /// payment for the previously-paid total — clamped to the new total — is
-  /// re-inserted using the original account/mode, so the payment trigger
-  /// re-derives paid_amount / balance_amount / payment_status correctly and the
-  /// account balance nets out. A paid-in-full invoice whose total drops keeps
-  /// only what the new total can absorb; the rest is refunded to the account.
+  /// Existing payments are reversed (refunding the account), then a single new
+  /// payment for [receivedAmount] — clamped to the new total — is inserted using
+  /// the [accountId] / [paymentModeId] chosen on the form, so the payment
+  /// trigger re-derives paid_amount / balance_amount / payment_status and the
+  /// account balance nets out. This lets an edit CHANGE what was paid (e.g. a
+  /// fully-paid invoice edited down to partial): the caller passes the amount
+  /// the form now shows as received. Pass 0 to make the document fully unpaid.
+  ///
+  /// (Callers preserve the previous paid amount simply by passing it back as
+  /// [receivedAmount] — the form pre-fills it from the loaded document.)
   Future<void> updateTransaction(
     model.Transaction txn,
-    List<TransactionItem> items,
-  ) async {
+    List<TransactionItem> items, {
+    required double receivedAmount,
+    int? accountId,
+    int? paymentModeId,
+  }) async {
     final db = await DatabaseHelper.database;
     final now = DateTime.now().toIso8601String();
     final id = txn.id!;
 
     await db.transaction((sql) async {
-      // Snapshot the existing payments before reversing them, so the same money
-      // (account + mode) can be re-applied against the edited total.
-      final priorPayments = await sql.query('payments',
-          columns: ['account_id', 'payment_mode_id', 'amount', 'payment_date'],
-          where: 'transaction_id = ?',
-          whereArgs: [id],
-          orderBy: 'payment_date ASC, id ASC');
-      final priorPaid = priorPayments.fold<double>(
-          0, (s, p) => s + (p['amount'] as num).toDouble());
-
       // Reverse the old payments (refund account) and the old lines' stock
       // before replacing them.
       await _reversePayments(sql, id);
@@ -330,18 +328,16 @@ class TransactionRepository {
         });
       }
 
-      // Re-apply the previously-paid amount against the new total. Clamp so a
-      // reduced total never carries a paid amount greater than itself; the
-      // surplus has already been refunded to the account by _reversePayments.
-      final reapply = priorPaid.clamp(0, txn.totalAmount).toDouble();
-      if (reapply > 0) {
-        final src = priorPayments.first;
+      // Apply the amount the form now reports as received, clamped to the new
+      // total. The payment trigger re-derives paid/balance/status.
+      final applied = receivedAmount.clamp(0, txn.totalAmount).toDouble();
+      if (applied > 0) {
         await sql.insert('payments', {
           'transaction_id': id,
-          'account_id': src['account_id'],
-          'payment_mode_id': src['payment_mode_id'],
-          'amount': reapply,
-          'payment_date': src['payment_date'] ?? now,
+          'account_id': accountId,
+          'payment_mode_id': paymentModeId,
+          'amount': applied,
+          'payment_date': now,
         });
       }
     });

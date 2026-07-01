@@ -15,6 +15,7 @@ import 'package:signature/signature.dart';
 import '../../../core/constants/app_colors.dart';
 import '../../../core/constants/app_strings.dart';
 import '../../../core/providers/business_provider.dart';
+import '../../cash_bank/providers/account_providers.dart';
 import '../widgets/visiting_card.dart';
 
 class CompanySetupScreen extends ConsumerStatefulWidget {
@@ -308,6 +309,41 @@ class _CompanySetupScreenState extends ConsumerState<CompanySetupScreen>
       if (_logoPath != null) 'logo_path': _logoPath,
       'signature_path': _signaturePath,
     });
+
+    // #13 / #12: mirror the bank + UPI details into Cash & Bank so the user
+    // doesn't re-enter them. Idempotent (linked by a settings key), and the
+    // created accounts stay fully editable there (opening balance, default,
+    // more accounts). Best-effort — a failure here must not block the profile
+    // save that already succeeded.
+    try {
+      final accountRepo = ref.read(accountRepoProvider);
+      final bankName = _bankNameCtrl.text.trim();
+      if (bankName.isNotEmpty || _bankAccCtrl.text.trim().isNotEmpty) {
+        await accountRepo.upsertLinkedAccount(
+          settingKey: 'linked_bank_account_id',
+          name: bankName.isEmpty ? 'Bank' : bankName,
+          accountType: 'bank',
+          bankName: bankName.isEmpty ? null : bankName,
+          accountNumber: _bankAccCtrl.text.trim().isEmpty
+              ? null
+              : _bankAccCtrl.text.trim(),
+          ifscCode: _ifscCtrl.text.trim().isEmpty
+              ? null
+              : _ifscCtrl.text.trim().toUpperCase(),
+        );
+      }
+      if (_upiCtrl.text.trim().isNotEmpty) {
+        await accountRepo.upsertLinkedAccount(
+          settingKey: 'linked_upi_account_id',
+          name: 'UPI',
+          accountType: 'wallet',
+          accountNumber: _upiCtrl.text.trim(),
+        );
+      }
+      ref.invalidate(accountListProvider);
+      ref.invalidate(totalBalanceProvider);
+    } catch (_) {/* non-blocking */}
+
     setState(() => _saving = false);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -20,9 +20,12 @@ class PartyCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final balance = party.netBalance;
-    final isToCollect = balance >= 0;
-    final balanceColor = isToCollect ? AppColors.income : AppColors.expense;
-    final balanceLabel = isToCollect ? 'To Collect' : 'To Pay';
+    final balanceLabel = party.balanceLabel;
+    // Neutral grey at a settled (₹0) balance — the label still shows the party's
+    // default direction, but there's nothing actually due to colour red/green.
+    final balanceColor = party.isSettled
+        ? AppColors.textSecondary
+        : (balance >= 0 ? AppColors.income : AppColors.expense);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),

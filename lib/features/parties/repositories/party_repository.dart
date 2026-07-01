@@ -109,4 +109,59 @@ class PartyRepository {
       ORDER BY transaction_date DESC, id DESC
     ''', [partyId]);
   }
+
+  /// Double-entry ledger events for this party, oldest first, for the Statement
+  /// tab. Two kinds of rows are unioned:
+  ///
+  /// 1. **Bills** — each sale / purchase / return at its full total:
+  ///    sale & purchase_return ⇒ debit (raises To Collect),
+  ///    purchase & sale_return ⇒ credit (raises To Pay).
+  /// 2. **Payments** — each real money movement from `payments` (account_id set),
+  ///    including the amount paid *at* a sale/purchase's creation AND standalone
+  ///    payment_in / payment_out receipts: money in (sale/other_income/
+  ///    payment_in) ⇒ credit, money out (purchase/expense/payment_out) ⇒ debit.
+  ///    Internal allocation rows (`reference_number 'PAY:<id>'`, account_id NULL)
+  ///    are excluded so a receipt isn't double-counted against its own invoice.
+  ///
+  /// The caller folds a running balance (debit − credit) from the opening
+  /// balance. So "purchase 10000, ₹5000 paid at entry, ₹4000 payment-out later"
+  /// yields: credit 10000, debit 5000, debit 4000 → net you owe ₹1000.
+  Future<List<Map<String, dynamic>>> ledger(int partyId) async {
+    final db = await DatabaseHelper.database;
+    return db.rawQuery('''
+      SELECT date, description, transaction_type, kind, debit, credit FROM (
+        SELECT
+          t.transaction_date        AS date,
+          t.transaction_number      AS description,
+          t.transaction_type        AS transaction_type,
+          'bill'                    AS kind,
+          CASE WHEN t.transaction_type IN ('sale','purchase_return')
+            THEN t.total_amount ELSE 0 END AS debit,
+          CASE WHEN t.transaction_type IN ('purchase','sale_return')
+            THEN t.total_amount ELSE 0 END AS credit
+        FROM transactions t
+        WHERE t.party_id = ? AND t.is_deleted = 0 AND t.status != 'cancelled'
+          AND t.transaction_type IN
+            ('sale','purchase','sale_return','purchase_return')
+
+        UNION ALL
+
+        SELECT
+          py.payment_date           AS date,
+          t.transaction_number      AS description,
+          t.transaction_type        AS transaction_type,
+          'payment'                 AS kind,
+          CASE WHEN t.transaction_type IN ('purchase','expense','payment_out')
+            THEN py.amount ELSE 0 END AS debit,
+          CASE WHEN t.transaction_type IN ('sale','other_income','payment_in')
+            THEN py.amount ELSE 0 END AS credit
+        FROM payments py
+        JOIN transactions t ON t.id = py.transaction_id
+        WHERE t.party_id = ? AND t.is_deleted = 0 AND t.status != 'cancelled'
+          AND py.account_id IS NOT NULL
+          AND (py.reference_number IS NULL OR py.reference_number NOT LIKE 'PAY:%')
+      )
+      ORDER BY date ASC, kind ASC, description ASC
+    ''', [partyId, partyId]);
+  }
 }

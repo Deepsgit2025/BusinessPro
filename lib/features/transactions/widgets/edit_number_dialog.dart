@@ -19,73 +19,119 @@ Future<String?> editDocumentNumber(
   required TransactionRepository repo,
   int? excludeId,
 }) async {
-  final controller = TextEditingController(text: current);
   final result = await showDialog<String>(
     context: context,
-    builder: (ctx) {
-      String? error;
-      return StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: Text('Edit $label'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              TextField(
-                controller: controller,
-                autofocus: true,
-                textCapitalization: TextCapitalization.characters,
-                decoration: InputDecoration(
-                  labelText: label,
-                  hintText: 'e.g. K/100',
-                  border: const OutlineInputBorder(),
-                  errorText: error,
-                ),
-                onChanged: (_) {
-                  if (error != null) setLocal(() => error = null);
-                },
-                onSubmitted: (_) => Navigator.pop(ctx, controller.text),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Applies to this document only. The next one keeps the normal '
-                'sequence.',
-                style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              onPressed: () async {
-                final entered = controller.text.trim();
-                if (entered.isEmpty) {
-                  setLocal(() => error = 'Number cannot be empty');
-                  return;
-                }
-                if (entered != current) {
-                  final clash =
-                      await repo.numberExists(entered, excludeId: excludeId);
-                  if (clash) {
-                    setLocal(() => error = 'That number is already used');
-                    return;
-                  }
-                }
-                if (ctx.mounted) Navigator.pop(ctx, entered);
-              },
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-      );
-    },
+    builder: (_) => _EditNumberDialog(
+      label: label,
+      current: current,
+      repo: repo,
+      excludeId: excludeId,
+    ),
   );
-  controller.dispose();
   if (result == null) return null;
   final trimmed = result.trim();
   if (trimmed.isEmpty || trimmed == current) return null;
   return trimmed;
+}
+
+/// The dialog body. Owns its own [TextEditingController] and disposes it in
+/// [dispose] — i.e. only after the dialog route has been removed and its exit
+/// transition finished. Disposing the controller synchronously right after
+/// `await showDialog` (the previous approach) crashed on Android with
+/// "A TextEditingController was used after being disposed", because the
+/// TextField was still mounted during the pop animation.
+class _EditNumberDialog extends StatefulWidget {
+  final String label;
+  final String current;
+  final TransactionRepository repo;
+  final int? excludeId;
+
+  const _EditNumberDialog({
+    required this.label,
+    required this.current,
+    required this.repo,
+    required this.excludeId,
+  });
+
+  @override
+  State<_EditNumberDialog> createState() => _EditNumberDialogState();
+}
+
+class _EditNumberDialogState extends State<_EditNumberDialog> {
+  late final TextEditingController _controller;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.current);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    final entered = _controller.text.trim();
+    if (entered.isEmpty) {
+      setState(() => _error = 'Number cannot be empty');
+      return;
+    }
+    if (entered != widget.current) {
+      final clash =
+          await widget.repo.numberExists(entered, excludeId: widget.excludeId);
+      if (!mounted) return;
+      if (clash) {
+        setState(() => _error = 'That number is already used');
+        return;
+      }
+    }
+    if (mounted) Navigator.pop(context, entered);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Edit ${widget.label}'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          TextField(
+            controller: _controller,
+            autofocus: true,
+            textCapitalization: TextCapitalization.characters,
+            decoration: InputDecoration(
+              labelText: widget.label,
+              hintText: 'e.g. K/100',
+              border: const OutlineInputBorder(),
+              errorText: _error,
+            ),
+            onChanged: (_) {
+              if (_error != null) setState(() => _error = null);
+            },
+            onSubmitted: (_) => _submit(),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Applies to this document only. The next one keeps the normal '
+            'sequence.',
+            style: TextStyle(fontSize: 12, color: AppColors.textSecondary),
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: _submit,
+          child: const Text('Save'),
+        ),
+      ],
+    );
+  }
 }
